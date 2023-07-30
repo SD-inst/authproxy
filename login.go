@@ -28,6 +28,11 @@ var creds = map[string]string{}
 
 type Result map[string]interface{}
 
+const (
+	expirationDays = 7
+	renewTime      = time.Hour * 24 * 6
+)
+
 func JSONError(c echo.Context, code int, err error) error {
 	return JSONErrorMessage(c, code, err.Error())
 }
@@ -46,7 +51,7 @@ func failLogin(c echo.Context) error {
 }
 
 func setToken(c echo.Context, subject string) error {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().AddDate(0, 0, 7)), Subject: subject})
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().AddDate(0, 0, expirationDays)), Subject: subject})
 	signed, err := token.SignedString([]byte(params.JWTSecret))
 	if err != nil {
 		return err
@@ -129,26 +134,6 @@ func keyErrorHandler(c echo.Context, err error) error {
 	return c.Redirect(302, "/login")
 }
 
-func renewHandler(c echo.Context) error {
-	token := c.Get("user").(*jwt.Token)
-	if token == nil {
-		return fmt.Errorf("no token")
-	}
-	subject, err := token.Claims.GetSubject()
-	if err != nil {
-		return JSONError(c, 400, err)
-	}
-	if subject == "" {
-		return JSONErrorMessage(c, 400, "user not set")
-	}
-	err = setToken(c, subject)
-	if err != nil {
-		return JSONError(c, 400, err)
-	}
-	log.Printf("Token renewed for user %s", subject)
-	return c.Redirect(302, "/")
-}
-
 func earlyCheckMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -159,8 +144,22 @@ func earlyCheckMiddleware() echo.MiddlewareFunc {
 					if err != nil {
 						return JSONError(c, 400, err)
 					}
-					if time.Until(date.Time) < time.Minute*3 {
-						c.Redirect(302, "/renew")
+					if time.Until(date.Time) < renewTime {
+						subject, err := token.Claims.GetSubject()
+						if err != nil {
+							return JSONError(c, 400, err)
+						}
+						if subject == "" {
+							return JSONErrorMessage(c, 400, "user not set")
+						}
+						if _, ok := creds[subject]; !ok {
+							return JSONErrorMessage(c, 404, "user not found")
+						}
+						err = setToken(c, subject)
+						if err != nil {
+							return JSONError(c, 400, err)
+						}
+						log.Printf("Token renewed for user %s", subject)
 					}
 				}
 			}

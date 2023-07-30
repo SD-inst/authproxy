@@ -72,7 +72,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	e.GET("/renew", renewHandler)
 	e.Group("/*", earlyCheckMiddleware(), middleware.Proxy(middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{{URL: tgturl}})))
 	e.Start(params.Address)
 }
