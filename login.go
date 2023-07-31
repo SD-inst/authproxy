@@ -51,12 +51,13 @@ func failLogin(c echo.Context) error {
 }
 
 func setToken(c echo.Context, subject string) error {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(time.Now().AddDate(0, 0, expirationDays)), Subject: subject})
+	expiration := time.Now().AddDate(0, 0, expirationDays)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{ExpiresAt: jwt.NewNumericDate(expiration), Subject: subject})
 	signed, err := token.SignedString([]byte(params.JWTSecret))
 	if err != nil {
 		return err
 	}
-	c.SetCookie(&http.Cookie{Name: "sdkey", Value: signed, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	c.SetCookie(&http.Cookie{Name: "sdkey", Value: signed, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expiration})
 	return nil
 }
 
