@@ -55,18 +55,16 @@ func main() {
 		log.Fatal(err)
 	}
 	e := echo.New()
-	// e.Any("/*", proxy,
-	// middleware.KeyAuthWithConfig(middleware.KeyAuthConfig{KeyLookup:
-	// "cookie:sdkey", Validator: validateKey, ErrorHandler: keyErrorHandler}))
 	e.Use(echojwt.WithConfig(echojwt.Config{
 		SigningKey:   []byte(params.JWTSecret),
 		ErrorHandler: keyErrorHandler,
-		TokenLookup:  "cookie:sdkey",
+		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
 			return c.Path() == "/login"
 		},
 	}))
 	e.GET("/login", loginPageHandler)
+	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
 	tgturl, err := url.Parse(params.TargetURL)
 	if err != nil {

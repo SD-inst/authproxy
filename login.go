@@ -19,6 +19,8 @@ import (
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
+const cookieName = "sdkey"
+
 //go:embed templates/*
 var templates embed.FS
 
@@ -57,7 +59,7 @@ func setToken(c echo.Context, subject string) error {
 	if err != nil {
 		return err
 	}
-	c.SetCookie(&http.Cookie{Name: "sdkey", Value: signed, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expiration})
+	c.SetCookie(&http.Cookie{Name: cookieName, Value: signed, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expiration})
 	return nil
 }
 
@@ -167,4 +169,10 @@ func earlyCheckMiddleware() echo.MiddlewareFunc {
 			return next(c)
 		}
 	}
+}
+
+func logoutHandler(c echo.Context) error {
+	c.SetCookie(&http.Cookie{Name: cookieName, MaxAge: -1})
+	c.Redirect(302, "/")
+	return nil
 }
