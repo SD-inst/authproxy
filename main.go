@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"log"
 	"math/rand"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/go-flags"
@@ -19,7 +21,12 @@ var params struct {
 	Username     string `short:"u" description:"Username for -a"`
 	Password     string `short:"p" description:"Password for -a"`
 	TargetURL    string `short:"t" description:"Target URL to proxy to"`
+	LLMURL       string `long:"llm-url" description:"Target LLM URL to proxy to"`
+	LLMStreamURL string `long:"llm-stream-url" description:"Target LLM stream (websocket) URL to proxy to"`
 	Address      string `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
+	LLMTimeout   int    `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
+	LLMModel     string `long:"llm-model" description:"LLM model to autoload"`
+	LLMArgs      string `long:"llm-args" description:"JSON-formatted parameters to load the model and loras"`
 	JWTSecret    string
 }
 
@@ -60,7 +67,7 @@ func main() {
 		ErrorHandler: keyErrorHandler,
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
-			return c.Path() == "/login"
+			return c.Path() == "/login" || strings.HasPrefix(c.Path(), "/api/")
 		},
 	}))
 	e.GET("/login", loginPageHandler)
@@ -70,6 +77,31 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	e.Group("/*", earlyCheckMiddleware(), middleware.Proxy(middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{{URL: tgturl}})))
+	e.Group("/*", earlyCheckMiddleware(), middleware.Proxy(middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{
+		{URL: tgturl},
+	})))
+
+	llmurl, err := url.Parse(params.LLMURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if llmurl != nil {
+		if params.LLMModel == "" {
+			log.Fatal("Specify the LLM model name")
+		}
+		llmstreamurl, err := url.Parse(params.LLMStreamURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		llm := NewLLMBalancer(llmurl, llmstreamurl)
+		llm.timeoutMins = params.LLMTimeout
+		llm.modelName = params.LLMModel
+		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
+		llm.updateTimeout()
+		e.Group("/api/*", middleware.ProxyWithConfig(middleware.ProxyConfig{
+			Balancer: llm,
+		}))
+		e.GET("/api/v1/model", llm.handleModel)
+	}
 	e.Start(params.Address)
 }

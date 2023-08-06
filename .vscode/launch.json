@@ -10,7 +10,22 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}",
-            "args": ["-f", "users.txt", "-t", "http://127.0.0.1:7760"]
+            "args": [
+                "-f",
+                "users.txt",
+                "-t",
+                "http://127.0.0.1:8001",
+                "--llm-url",
+                "http://172.25.10.35:7861",
+                "--llm-timeout",
+                "1",
+                "--llm-model",
+                "TheBloke_WizardLM-13B-V1.2-GPTQ",
+                "--llm-args",
+                "{\"max_seq_len\": 8192, \"alpha_value\": 8, \"lora\": [\"nRuaif_Kimiko_13B\"]}",
+                "-l",
+                "0.0.0.0:8005"
+            ]
         }
     ]
 }
