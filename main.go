@@ -12,6 +12,7 @@ import (
 	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/rkfg/authproxy/upload"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -27,6 +28,7 @@ var params struct {
 	LLMTimeout   int    `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
 	LLMModel     string `long:"llm-model" description:"LLM model to autoload"`
 	LLMArgs      string `long:"llm-args" description:"JSON-formatted parameters to load the model and loras"`
+	LoRAPath     string `long:"lora-path" description:"Path to the directory for LoRA uploads"`
 	JWTSecret    string
 }
 
@@ -85,7 +87,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if llmurl != nil {
+	if llmurl.Scheme != "" {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
 		}
@@ -102,6 +104,9 @@ func main() {
 			Balancer: llm,
 		}))
 		e.GET("/api/v1/model", llm.handleModel)
+	}
+	if params.LoRAPath != "" {
+		upload.NewUploader(e.Group("/upload"), params.LoRAPath)
 	}
 	e.Start(params.Address)
 }

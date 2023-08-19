@@ -1,0 +1,21 @@
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>LoRA upload</title>
+        <script src="index.js"></script>
+        <link rel="stylesheet" href="style.css" />
+    </head>
+    <body onload="load()">
+        <div style="display: flex; flex-direction: column; align-items: center">
+            <h1>LoRA file manager</h1>
+            <div class="button-panel">
+                <button class="button-3 button-4" onclick="createDir()">
+                    New folder
+                </button>
+                <button class="button-3" onclick="uploadFile()">Upload</button>
+            </div>
+            <div id="files"></div>
+        </div>
+    </body>
+</html>
