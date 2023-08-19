@@ -23,6 +23,8 @@
                 "TheBloke_WizardLM-13B-V1.2-GPTQ",
                 "--llm-args",
                 "{\"max_seq_len\": 8192, \"alpha_value\": 8, \"lora\": [\"nRuaif_Kimiko_13B\"]}",
+                "--lora-path",
+                "/tmp/lora",
                 "-l",
                 "0.0.0.0:8005"
             ]

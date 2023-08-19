@@ -10,7 +10,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dustin/go-humanize"
 	"github.com/labstack/echo/v4"
+	"golang.org/x/sys/unix"
 )
 
 //go:embed webroot
@@ -118,11 +120,20 @@ func (u *uploader) listFiles(c echo.Context) error {
 	return JSONOk(c, result)
 }
 
+func (u *uploader) stat(c echo.Context) error {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(u.root, &stat); err != nil {
+		return JSONError(c, 500, err)
+	}
+	return JSONOk(c, Result{"free": humanize.IBytes(stat.Bavail * uint64(stat.Bsize))})
+}
+
 func NewUploader(api *echo.Group, rootPath string) *uploader {
 	os.MkdirAll(rootPath, 0755)
 	result := uploader{root: rootPath}
 	api.StaticFS("*", echo.MustSubFS(webroot, "webroot"))
 	api.GET("/files", result.listFiles)
+	api.GET("/stat", result.stat)
 	api.POST("/files", result.postFiles)
 	return &result
 }
