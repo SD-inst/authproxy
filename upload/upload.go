@@ -72,6 +72,9 @@ func (u *uploader) postFiles(c echo.Context) error {
 		if !filepath.IsLocal(file.Filename) {
 			return JSONErrorMessage(c, 400, "invalid file name")
 		}
+		if !strings.HasSuffix(file.Filename, ".safetensors") {
+			return JSONErrorMessage(c, 400, "only safetensors are supported")
+		}
 		source, err := file.Open()
 		if err != nil {
 			return JSONError(c, 400, err)
