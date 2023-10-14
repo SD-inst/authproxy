@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -45,7 +46,7 @@ func JSONErrorMessage(c echo.Context, code int, msg string) error {
 }
 
 func loginPageHandler(c echo.Context) error {
-	return tpl.Execute(c.Response(), struct{}{})
+	return tpl.Execute(c.Response(), struct{ ReturnTo string }{ReturnTo: c.QueryParam("return")})
 }
 
 func failLogin(c echo.Context) error {
@@ -66,6 +67,7 @@ func setToken(c echo.Context, subject string) error {
 func loginHandler(c echo.Context) error {
 	login := strings.ToLower(c.FormValue("login"))
 	password := c.FormValue("password")
+	returnTo := c.FormValue("return")
 	if login == "" {
 		return failLogin(c)
 	}
@@ -80,7 +82,10 @@ func loginHandler(c echo.Context) error {
 	if err != nil {
 		return JSONError(c, 400, err)
 	}
-	return c.Redirect(302, "/")
+	if returnTo == "" {
+		returnTo = "/"
+	}
+	return c.Redirect(302, returnTo)
 }
 
 func loadCreds(filename string) error {
@@ -134,7 +139,7 @@ func randomString(r *rand.Rand, length int) string {
 
 func keyErrorHandler(c echo.Context, err error) error {
 	log.Print(err)
-	return c.Redirect(302, "/login")
+	return c.Redirect(302, "/login?return="+url.QueryEscape(c.Request().RequestURI))
 }
 
 func earlyCheckMiddleware() echo.MiddlewareFunc {
