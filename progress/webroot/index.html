@@ -1,0 +1,157 @@
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>SD queue monitor</title>
+        <link
+            href="mui-0.10.3/css/mui.min.css"
+            rel="stylesheet"
+            type="text/css"
+        />
+        <script src="mui-0.10.3/js/mui.min.js"></script>
+        <style>
+            .animated-progress {
+                width: 300px;
+                height: 30px;
+                border-radius: 5px;
+                margin: 20px 10px;
+                border: 1px solid rgb(189, 113, 113);
+                overflow: hidden;
+                position: relative;
+            }
+
+            .animated-progress span {
+                height: 100%;
+                display: block;
+                width: 0;
+                color: rgb(255, 251, 251);
+                line-height: 30px;
+                position: absolute;
+                text-align: end;
+                padding-right: 5px;
+            }
+
+            .progress-blue span {
+                background-color: #039be5;
+            }
+        </style>
+        <script>
+            const host = location.href.replace('http', 'ws');
+            const apiUrl = host + (host.endsWith('/') ? '' : '/') + 'ws';
+            function init(ws) {
+                ws.onopen = () => {
+                    console.log('Connected!');
+                    document.getElementById('connection_lost').style.display =
+                        'none';
+                };
+                ws.onclose = (e) => {
+                    document.getElementById('connection_lost').style.display =
+                        'block';
+                    setTimeout(() => {
+                        init(new WebSocket(ws.url));
+                    }, 1000);
+                };
+                ws.onmessage = (ev) => {
+                    if (!ev) {
+                        return;
+                    }
+                    const packet = JSON.parse(ev.data);
+                    const type = packet.type;
+                    const data = packet.data;
+                    switch (type) {
+                        case 'progress':
+                            document.getElementById('queued').innerText =
+                                data.queue;
+                            document
+                                .getElementById('progress')
+                                .style.setProperty(
+                                    'width',
+                                    (data.progress * 100).toFixed(2) + '%'
+                                );
+                            document.getElementById('eta').innerText =
+                                data.eta + ' sec';
+                            document.getElementById('description').innerText =
+                                data.description;
+                            const lastActive = new Date(data.last_active);
+                            document.getElementById('last_active').innerText =
+                                lastActive.toLocaleString();
+                            if (data.progress > 0) {
+                                document.title = `[${Math.floor(
+                                    data.progress * 100
+                                )}% ETA: ${data.eta}s] SD queue monitor`;
+                            } else {
+                                document.title = 'SD queue monitor';
+                            }
+                            break;
+                        case 'users':
+                            document.getElementById(
+                                'users'
+                            ).innerText = `${data.users}/${data.sessions}`;
+                    }
+                };
+            }
+            function start() {
+                const ws = new WebSocket(apiUrl);
+                init(ws);
+            }
+        </script>
+    </head>
+    <body onload="start()">
+        <div
+            class="mui-container"
+            style="
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                height: 100%;
+            "
+        >
+            <div class="mui-panel">
+                <div
+                    class="mui--text-display1"
+                    style="text-align: center; margin-bottom: 2rem"
+                >
+                    SD queue monitor
+                </div>
+                <div
+                    id="connection_lost"
+                    class="mui--text-display2 mui--text-danger"
+                    style="
+                        text-align: center;
+                        margin-bottom: 2rem;
+                        display: none;
+                    "
+                >
+                    Connection lost
+                </div>
+                <div class="mui--text-body1">
+                    Queued: <span id="queued">0</span>
+                </div>
+                <div
+                    style="
+                        display: flex;
+                        flex-direction: row;
+                        align-items: center;
+                        gap: 10px;
+                    "
+                >
+                    <div class="mui--text-body1" style="white-space: nowrap">
+                        ETA: <span id="eta">0s</span>
+                    </div>
+                    <div class="animated-progress progress-blue">
+                        <span id="progress"></span>
+                    </div>
+                </div>
+                <div class="mui--text-body1">
+                    Description: <span id="description"></span>
+                </div>
+                <div class="mui--text-body1">
+                    Last active: <span id="last_active">unknown</span>
+                </div>
+                <div class="mui--text-body1">
+                    Users/sessions connected: <span id="users">0/0</span>
+                </div>
+            </div>
+        </div>
+    </body>
+</html>

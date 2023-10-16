@@ -12,6 +12,7 @@ import (
 	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/upload"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -75,6 +76,7 @@ func main() {
 	e.GET("/login", loginPageHandler)
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
+	progress.AddHandlers(e.Group("/q"))
 	tgturl, err := url.Parse(params.TargetURL)
 	if err != nil {
 		log.Fatal(err)
