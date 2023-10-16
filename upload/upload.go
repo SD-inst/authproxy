@@ -4,6 +4,7 @@ import (
 	"embed"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,8 +26,9 @@ type uploader struct {
 type Result map[string]interface{}
 
 type fileItem struct {
-	Type string `json:"type"`
-	Name string `json:"name"`
+	Type      string `json:"type"`
+	Name      string `json:"name"`
+	Timestamp int64  `json:"timestamp"`
 }
 
 func JSONOk(c echo.Context, r interface{}) error {
@@ -118,7 +120,13 @@ func (u *uploader) listFiles(c echo.Context) error {
 		if f.IsDir() {
 			t = "dir"
 		}
-		result = append(result, fileItem{Type: t, Name: f.Name()})
+		fi := fileItem{Type: t, Name: f.Name()}
+		if info, err := f.Info(); err != nil {
+			log.Printf("Error getting file %s info: %s", f.Name(), err)
+		} else {
+			fi.Timestamp = info.ModTime().UnixMilli()
+		}
+		result = append(result, fi)
 	}
 	return JSONOk(c, result)
 }

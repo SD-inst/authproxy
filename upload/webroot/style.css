@@ -10,11 +10,24 @@ body {
 }
 
 .icon {
-    max-width: 32px;
+    max-width: 2rem;
+    vertical-align: middle;
+    margin-right: 0.1rem;
+}
+
+.clickable {
+    cursor: pointer;
+}
+
+.filename {
+    display: flex;
+    overflow-wrap: anywhere;
+    align-items: center;
 }
 
 a {
     color: black;
+    text-decoration: none;
 }
 
 a:visited {
@@ -45,6 +58,10 @@ a:visited {
     touch-action: manipulation;
     vertical-align: middle;
     white-space: nowrap;
+}
+
+th {
+    text-decoration: underline;
 }
 
 .button-3:focus:not(:focus-visible):not(.focus-visible) {
