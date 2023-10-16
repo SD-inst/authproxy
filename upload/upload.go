@@ -3,11 +3,14 @@ package upload
 import (
 	"embed"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -31,6 +34,8 @@ type fileItem struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
+var validateRegexp = regexp.MustCompile(`[*<>]`)
+
 func JSONOk(c echo.Context, r interface{}) error {
 	return c.JSON(http.StatusOK, r)
 }
@@ -50,8 +55,19 @@ func (u *uploader) fullPath(dir string) (string, error) {
 	return filepath.Join(u.root, dir), nil
 }
 
+func validateName(dir string) bool {
+	return !validateRegexp.MatchString(dir)
+}
+
 func (u *uploader) postFiles(c echo.Context) error {
-	dir := c.FormValue("dir")
+	rawdir := c.FormValue("dir")
+	if !validateName(rawdir) {
+		return JSONErrorMessage(c, 400, "Invalid directory name")
+	}
+	dir, err := url.QueryUnescape(rawdir)
+	if err != nil {
+		JSONError(c, 400, err)
+	}
 	typ := c.FormValue("type")
 	fullpath, err := u.fullPath(dir)
 	if err != nil {
@@ -73,6 +89,9 @@ func (u *uploader) postFiles(c echo.Context) error {
 		}
 		if !filepath.IsLocal(file.Filename) {
 			return JSONErrorMessage(c, 400, "invalid file name")
+		}
+		if !validateName(file.Filename) {
+			return JSONErrorMessage(c, 400, "Invalid file name")
 		}
 		if !strings.HasSuffix(file.Filename, ".safetensors") {
 			return JSONErrorMessage(c, 400, "only safetensors are supported")
@@ -96,7 +115,10 @@ func (u *uploader) postFiles(c echo.Context) error {
 }
 
 func (u *uploader) listFiles(c echo.Context) error {
-	dir := c.QueryParam("dir")
+	dir, err := url.QueryUnescape(c.QueryParam("dir"))
+	if err != nil {
+		JSONError(c, 400, err)
+	}
 	fullpath, err := u.fullPath(dir)
 	if err != nil {
 		return JSONError(c, 400, err)
@@ -120,7 +142,7 @@ func (u *uploader) listFiles(c echo.Context) error {
 		if f.IsDir() {
 			t = "dir"
 		}
-		fi := fileItem{Type: t, Name: f.Name()}
+		fi := fileItem{Type: t, Name: html.EscapeString(f.Name())}
 		if info, err := f.Info(); err != nil {
 			log.Printf("Error getting file %s info: %s", f.Name(), err)
 		} else {

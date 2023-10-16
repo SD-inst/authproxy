@@ -44,8 +44,8 @@ async function load() {
             <img src='images/up.png' class='icon' style='margin-bottom: 20px' />
         </a><div>`;
     }
-    document.getElementById('path').innerText = currentPath;
-    const result = await fetch('files?dir=' + currentPath);
+    document.getElementById('path').innerText = decodeURIComponent(currentPath);
+    const result = await fetch('files?dir=' + encodeURIComponent(currentPath));
     if (result.status != 200) {
         alertError(result);
         return;
@@ -64,7 +64,11 @@ async function load() {
     }
     const fileList = document.createElement('table');
     fileList.setAttribute('cellpadding', 5);
-    fileList.innerHTML = `<thead><tr><th onclick="setSort('name')" class="clickable">Filename ${formatSort('name')}</th><th onclick="setSort('timestamp')" class="clickable">Upload date ${formatSort('timestamp')}</th></tr></thead>`;
+    fileList.innerHTML = `<thead><tr><th onclick="setSort('name')" class="clickable">Filename ${formatSort(
+        'name'
+    )}</th><th onclick="setSort('timestamp')" class="clickable">Upload date ${formatSort(
+        'timestamp'
+    )}</th></tr></thead>`;
     files.append(fileList);
     const fileListBody = document.createElement('tbody');
     fileList.append(fileListBody);
