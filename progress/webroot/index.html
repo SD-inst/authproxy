@@ -87,6 +87,22 @@
                             document.getElementById(
                                 'users'
                             ).innerText = `${data.users}/${data.sessions}`;
+                            break;
+                        case 'gpu':
+                            document.getElementById(
+                                'free'
+                            ).innerText = `Free: ${data.free} MB [${Math.round(
+                                (data.free * 100) / data.total
+                            )}%]`;
+                            document.getElementById(
+                                'used'
+                            ).innerText = `Used: ${data.used} MB [${Math.round(
+                                (data.used * 100) / data.total
+                            )}%]`;
+                            document.getElementById(
+                                'total'
+                            ).innerText = `Total: ${data.total} MB`;
+                            break;
                     }
                 };
             }
@@ -142,14 +158,29 @@
                         <span id="progress"></span>
                     </div>
                 </div>
-                <div class="mui--text-body1">
-                    Description: <span id="description"></span>
-                </div>
-                <div class="mui--text-body1">
-                    Last active: <span id="last_active">unknown</span>
-                </div>
-                <div class="mui--text-body1">
-                    Users/sessions connected: <span id="users">0/0</span>
+                <div class="mui-container-fluid">
+                    <div
+                        class="mui-row"
+                    >
+                    <div class="mui-col-xs-12 mui-col-md-6">
+                        <div class="mui--text-subhead">Task</div>
+                        <div class="mui--text-body1">
+                            Description: <span id="description"></span>
+                        </div>
+                        <div class="mui--text-body1">
+                            Last active: <span id="last_active">unknown</span>
+                        </div>
+                        <div class="mui--text-body1">
+                            Users/sessions connected:
+                            <span id="users">0/0</span>
+                        </div>
+                    </div>
+                    <div class="mui-col-xs-12 mui-col-md-6">
+                        <div class="mui--text-subhead">GPU memory</div>
+                        <div class="mui--text-body1" id="free">Free:</div>
+                        <div class="mui--text-body1" id="used">Used:</div>
+                        <div class="mui--text-body1" id="total">Total:</div>
+                    </div>
                 </div>
             </div>
         </div>

@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"bufio"
 	"context"
 	"embed"
 	"encoding/json"
@@ -8,6 +9,9 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,6 +26,7 @@ type packetType string
 const (
 	PROGRESS_UPDATE packetType = "progress"
 	USERS_UPDATE    packetType = "users"
+	GPU_UPDATE      packetType = "gpu"
 )
 
 type Packet struct {
@@ -40,6 +45,12 @@ type ProgressUpdate struct {
 type UsersUpdate struct {
 	Users    int `json:"users"`
 	Sessions int `json:"sessions"`
+}
+
+type GPUUpdate struct {
+	Used  uint64 `json:"used"`
+	Free  uint64 `json:"free"`
+	Total uint64 `json:"total"`
 }
 
 type subscriber struct {
@@ -138,6 +149,7 @@ func wsHandler(c echo.Context) error {
 	defer func() { b.delSub <- s }()
 	quit := make(chan struct{})
 	b.reqInit <- requestInit{ch: ch, stateType: PROGRESS_UPDATE}
+	b.reqInit <- requestInit{ch: ch, stateType: GPU_UPDATE}
 	go func() {
 		var v string
 		for {
@@ -185,6 +197,29 @@ func updater() {
 	}
 }
 
+func gpuStatus() {
+	cmd := exec.Command("nvidia-smi", "--query-gpu", "memory.used,memory.free,memory.total", "--format", "csv,noheader,nounits", "-l")
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("Error getting stdout of nvidia-smi: %s", err)
+		return
+	}
+	s := bufio.NewScanner(output)
+	if err := cmd.Start(); err != nil {
+		log.Printf("Error starting nvidia-smi: %s", err)
+		return
+	}
+	for s.Scan() {
+		line := s.Text()
+		split := strings.Split(line, ", ")
+		used, _ := strconv.ParseUint(split[0], 10, 64)
+		free, _ := strconv.ParseUint(split[1], 10, 64)
+		total, _ := strconv.ParseUint(split[2], 10, 64)
+		b.broadcast <- Packet{Type: GPU_UPDATE, Data: GPUUpdate{Free: free, Used: used, Total: total}}
+	}
+	cmd.Wait()
+}
+
 func AddHandlers(e *echo.Group) {
 	root, err := fs.Sub(webroot, "webroot")
 	if err != nil {
@@ -194,4 +229,5 @@ func AddHandlers(e *echo.Group) {
 	e.GET("/ws", wsHandler)
 	go b.start(context.Background())
 	go updater()
+	go gpuStatus()
 }
