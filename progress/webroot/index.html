@@ -75,6 +75,7 @@
                             const lastActive = new Date(data.last_active);
                             document.getElementById('last_active').innerText =
                                 lastActive.toLocaleString();
+                            document.getElementById('duration').innerText = data.duration;
                             if (data.progress > 0) {
                                 document.title = `[${Math.floor(
                                     data.progress * 100
@@ -169,6 +170,9 @@
                         </div>
                         <div class="mui--text-body1">
                             Last active: <span id="last_active">unknown</span>
+                        </div>
+                        <div class="mui--text-body1">
+                            Duration: <span id="duration"></span>
                         </div>
                         <div class="mui--text-body1">
                             Users/sessions connected:

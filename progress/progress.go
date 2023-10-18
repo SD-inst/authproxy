@@ -35,11 +35,12 @@ type Packet struct {
 }
 
 type ProgressUpdate struct {
-	Queue       int       `json:"queue"`
-	Progress    float64   `json:"progress"`
-	ETA         int       `json:"eta"`
-	Description string    `json:"description"`
-	LastActive  time.Time `json:"last_active"`
+	Queue        int       `json:"queue"`
+	Progress     float64   `json:"progress"`
+	ETA          int       `json:"eta"`
+	Description  string    `json:"description"`
+	LastActive   time.Time `json:"last_active"`
+	TaskDuration string    `json:"duration"`
 }
 
 type UsersUpdate struct {
@@ -173,6 +174,8 @@ func wsHandler(c echo.Context) error {
 func updater() {
 	client := http.Client{Timeout: time.Second * 5}
 	lastProgress := float64(0)
+	lastID := ""
+	jobStart := time.Now()
 	for {
 		time.Sleep(time.Second)
 		resp, err := client.Get("http://stablediff-cuda:7860/sdapi/v1/progress")
@@ -182,15 +185,20 @@ func updater() {
 		}
 		var p progress
 		json.NewDecoder(resp.Body).Decode(&p)
+		if lastID != p.State.Job {
+			lastID = p.State.Job
+			jobStart, _ = time.ParseInLocation("20060102150405", p.State.JobTimestamp, time.Local)
+		}
 		if lastProgress != p.Progress {
 			b.broadcast <- Packet{
 				Type: PROGRESS_UPDATE,
 				Data: ProgressUpdate{
-					Queue:       p.State.JobCount,
-					Progress:    p.Progress,
-					ETA:         int(p.EtaRelative),
-					Description: fmt.Sprintf("%s %d/%d steps", "rendering", p.State.SamplingStep, p.State.SamplingSteps),
-					LastActive:  time.Now(),
+					Queue:        p.State.JobCount,
+					Progress:     p.Progress,
+					ETA:          int(p.EtaRelative),
+					Description:  fmt.Sprintf("%s %d/%d steps", "rendering", p.State.SamplingStep, p.State.SamplingSteps),
+					LastActive:   time.Now(),
+					TaskDuration: time.Since(jobStart).Truncate(time.Second).String(),
 				}}
 			lastProgress = p.Progress
 		}
