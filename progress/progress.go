@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ import (
 
 //go:embed webroot
 var webroot embed.FS
+
+const maxTaskDuration = time.Minute * 5
 
 type packetType string
 
@@ -201,6 +204,17 @@ func updater() {
 					TaskDuration: time.Since(jobStart).Truncate(time.Second).String(),
 				}}
 			lastProgress = p.Progress
+		}
+		if time.Since(jobStart) > maxTaskDuration && p.Progress > 0 {
+			log.Printf("Task execution time exceeded %s, restarting", maxTaskDuration.String())
+			f, err := os.OpenFile("/var/run/sdwd/control.fifo", os.O_WRONLY, 0666)
+			if err != nil {
+				log.Printf("Error opening control FIFO: %s", err)
+				continue
+			}
+			f.WriteString("restart")
+			f.Close()
+			log.Printf("Instance restarted")
 		}
 	}
 }
