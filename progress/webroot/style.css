@@ -1,0 +1,43 @@
+.mui-panel {
+    box-shadow: none;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+}
+
+.animated-progress {
+    width: 300px;
+    height: 30px;
+    border-radius: 5px;
+    margin: 20px 10px;
+    border: 1px solid #374151;
+    overflow: hidden;
+    position: relative;
+}
+
+.animated-progress span {
+    height: 100%;
+    display: block;
+    width: 0;
+    color: rgb(255, 251, 251);
+    line-height: 30px;
+    position: absolute;
+    text-align: end;
+    padding-right: 5px;
+}
+
+.progress-blue span {
+    background-color: #0060df;
+}
+
+@media (prefers-color-scheme: dark) {
+    body {
+        background: #0b0f19;
+        color: #f3f4f6;
+    }
+
+    .mui-panel {
+        background: #111827;
+        color: #f3f4f6;
+        border-color: #374151;
+    }
+}
