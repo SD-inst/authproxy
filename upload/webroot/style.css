@@ -120,6 +120,19 @@ th {
     outline: none;
 }
 
+.button-abort {
+    position: absolute;
+    top: calc(50% + 100px);
+    left: calc(50% - 35px);
+    width: 70px;
+    height: 30px;
+    background-color: #a42e4f;
+}
+
+.button-abort:hover {
+    background-color: #972c4b;
+}
+
 .lds-ring {
     display: inline-block;
     position: absolute;
@@ -191,4 +204,32 @@ th {
     .button-panel {
         border-bottom: 1px solid #9ca3af;
     }
+}
+
+.animated-progress {
+    position: absolute;
+    top: calc(50% + 40px);
+    left: calc(50% - 150px);
+    width: 300px;
+    height: 30px;
+    border-radius: 5px;
+    margin: 20px 10px;
+    border: 1px solid #374151;
+    overflow: hidden;
+}
+
+.animated-progress span {
+    height: 100%;
+    display: block;
+    width: 0;
+    transition: width 0.5s ease-out;
+    color: rgb(255, 251, 251);
+    line-height: 30px;
+    position: absolute;
+    text-align: end;
+    font-weight: bold;
+}
+
+.progress-blue span {
+    background-color: #0060df;
 }

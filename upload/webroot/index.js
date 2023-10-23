@@ -135,22 +135,46 @@ async function uploadFile() {
         const loading = document.createElement('div');
         loading.setAttribute('class', 'loading');
         loading.innerHTML =
-            '<div class="lds-ring"><div></div><div></div><div></div><div></div></div>';
+            '<div class="lds-ring"><div></div><div></div><div></div><div></div></div><div class="animated-progress progress-blue"><span id="progress" /></div><button class="button-3 button-abort" id="abort-btn">Abort</button>';
         document.body.appendChild(loading);
+        const progress = document.getElementById('progress');
+        const abortBtn = document.getElementById('abort-btn');
         try {
             let currentPath = getCurrentPath();
             const data = new FormData();
             data.append('dir', currentPath);
             data.append('file', inp.files[0]);
             data.append('type', 'upload_file');
-            const result = await fetch('files', { method: 'POST', body: data });
-            if (result.status != 200) {
-                alertError(result);
-                return;
-            }
+            const req = new XMLHttpRequest();
+            req.upload.addEventListener('progress', function (ev) {
+                if (ev.total > 0) {
+                    const perc =
+                        ((ev.loaded * 100) / ev.total).toFixed(2) + '%';
+                    progress.style.setProperty('width', perc);
+                    progress.innerText = perc;
+                }
+            });
+            req.addEventListener('readystatechange', (ev) => {
+                if (req.readyState === XMLHttpRequest.DONE) {
+                    document.body.removeChild(loading);
+                    load();
+                    if (req.status !== 200 && req.status !== 0) {
+                        alert('Error: ' + JSON.parse(req.response).message);
+                    }
+                }
+            });
+            abortBtn.onclick = () => {
+                if (window.confirm('Abort upload?')) {
+                    req.abort();
+                }
+            };
+            const error = () => {
+                alert('Error during file upload');
+            };
+            req.addEventListener('error', error);
+            req.open('POST', 'files');
+            req.send(data);
         } finally {
-            document.body.removeChild(loading);
-            load();
         }
     };
     inp.click();
