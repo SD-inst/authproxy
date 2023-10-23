@@ -191,6 +191,9 @@ func updater() {
 		if lastID != p.State.Job {
 			lastID = p.State.Job
 			jobStart, _ = time.ParseInLocation("20060102150405", p.State.JobTimestamp, time.Local)
+			if time.Since(jobStart) > time.Hour { // sanity check
+				jobStart = time.Now()
+			}
 		}
 		if lastProgress != p.Progress {
 			b.broadcast <- Packet{
