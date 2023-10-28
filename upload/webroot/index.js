@@ -180,4 +180,84 @@ async function uploadFile() {
     inp.click();
 }
 
+async function downloadFile() {
+    const input = document.getElementById('civiturl');
+    const url = input.value;
+    if (!window.confirm(`Load a LoRA remotely from ${url}?`)) {
+        return;
+    }
+    const params = new FormData();
+    params.append('url', url);
+    params.append('dir', getCurrentPath());
+    fetch('download', { method: 'POST', body: params });
+    input.value = '';
+    toast('LoRA queued, please wait!', 'success');
+}
+
+function toast(text, type) {
+    Toastify({
+        text,
+        duration: 3000,
+        close: true,
+        gravity: 'bottom',
+        position: 'center',
+        stopOnFocus: true,
+        style: {
+            background:
+                type === 'error'
+                    ? 'linear-gradient(to right, #972c4b, #a42e4f)'
+                    : 'linear-gradient(to right, #2c974b, #2ea44f)',
+        },
+    }).showToast();
+}
+
+function startWS() {
+    const host = location.protocol.replace('http', 'ws') + '//' + location.host;
+    const apiUrl = host + '/q/ws';
+    const ws = new WebSocket(apiUrl);
+    init(ws);
+}
+
+function init(ws) {
+    const cont = document.getElementById('dlcontainer');
+    const progress = document.getElementById('dlprogress');
+    const fn = document.getElementById('dlfilename');
+    ws.onopen = () => {
+        console.log('Connected!');
+    };
+    ws.onclose = (e) => {
+        setTimeout(() => {
+            init(new WebSocket(ws.url));
+        }, 1000);
+    };
+    ws.onmessage = (ev) => {
+        if (!ev) {
+            return;
+        }
+        const packet = JSON.parse(ev.data);
+        const type = packet.type;
+        const data = packet.data;
+        switch (type) {
+            case 'download':
+                if (data.filename) {
+                    cont.style.removeProperty('display');
+                    fn.innerText = data.filename;
+                } else {
+                    cont.style.setProperty('display', 'none');
+                    load();
+                    break;
+                }
+                const perc =
+                    ((data.completed_bytes * 100) / data.total_bytes).toFixed(
+                        2
+                    ) + '%';
+                progress.style.setProperty('width', perc);
+                progress.innerText = perc;
+                break;
+            case 'message':
+                toast(data.message, data.type);
+        }
+    };
+}
+
 window.onhashchange = load;

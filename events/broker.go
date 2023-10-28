@@ -54,7 +54,9 @@ func (b *Broker) Start(ctx context.Context) {
 			}
 			b.updateUsers()
 		case p := <-b.broadcast:
-			b.state[p.Type] = p.Data
+			if !p.Ephemeral {
+				b.state[p.Type] = p.Data
+			}
 			for k := range b.subscribers {
 				select {
 				case k <- p:

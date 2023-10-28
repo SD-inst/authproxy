@@ -3,6 +3,7 @@ module github.com/rkfg/authproxy
 go 1.20
 
 require (
+	github.com/antchfx/htmlquery v1.3.0
 	github.com/btcsuite/go-flags v0.0.0-20150116065318-6c288d648c1c
 	github.com/dustin/go-humanize v1.0.1
 	github.com/golang-jwt/jwt/v5 v5.0.0
@@ -14,7 +15,9 @@ require (
 )
 
 require (
+	github.com/antchfx/xpath v1.2.3 // indirect
 	github.com/golang-jwt/jwt v3.2.2+incompatible // indirect
+	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/labstack/gommon v0.4.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect

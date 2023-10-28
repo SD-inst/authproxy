@@ -93,10 +93,12 @@ th {
 .button-panel {
     display: flex;
     flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-evenly;
     margin-bottom: 20px;
     padding-bottom: 10px;
     border-bottom: 1px solid black;
-    gap: 50px;
+    gap: 10px;
 }
 
 .button-4 {
@@ -235,4 +237,21 @@ th {
 
 .progress-blue span {
     background-color: #0060df;
+}
+
+.dlcontainer {
+    position: sticky;
+    display: block;
+    bottom: 0px;
+    height: 100px;
+    background-color: #000000cc;
+    border-radius: 15px;
+}
+
+.dlfilename {
+    width: 100%;
+    margin-top: 10px;
+    text-align: center;
+    vertical-align: bottom;
+    overflow-wrap: anywhere;
 }

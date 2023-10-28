@@ -12,6 +12,7 @@ import (
 	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/rkfg/authproxy/events"
 	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/upload"
 	"golang.org/x/crypto/bcrypt"
@@ -78,7 +79,8 @@ func main() {
 	e.GET("/login", loginPageHandler)
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
-	pr := progress.NewProgress(params.SDHost, params.FIFOPath)
+	broker := events.NewBroker()
+	pr := progress.NewProgress(broker, params.SDHost, params.FIFOPath)
 	pr.AddHandlers(e.Group("/q"))
 	pr.Start()
 	tgturl, err := url.Parse(params.TargetURL)
@@ -112,7 +114,7 @@ func main() {
 		e.GET("/api/v1/model", llm.handleModel)
 	}
 	if params.LoRAPath != "" {
-		upload.NewUploader(e.Group("/upload"), params.LoRAPath)
+		upload.NewUploader(e.Group("/upload"), params.LoRAPath, broker)
 	}
 	e.Start(params.Address)
 }

@@ -4,9 +4,11 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>LoRA upload</title>
         <script src="index.js"></script>
+        <script type="text/javascript" src="toasts/toastify.js"></script>
         <link rel="stylesheet" href="style.css" />
+        <link rel="stylesheet" type="text/css" href="toasts/toastify.min.css" />
     </head>
-    <body onload="load()">
+    <body onload="load(); startWS()">
         <div style="display: flex; flex-direction: column; align-items: center">
             <h1>LoRA file manager</h1>
             <h2 id="path"></h2>
@@ -15,9 +17,28 @@
                     New folder
                 </button>
                 <button class="button-3" onclick="uploadFile()">Upload</button>
+                <div>
+                    <input
+                        type="url"
+                        id="civiturl"
+                        placeholder="CivitAI page link"
+                    />
+                    <button class="button-3" onclick="downloadFile()">
+                        Remote DL
+                    </button>
+                </div>
             </div>
             <div id="files"></div>
             <h6 id="stat"></h6>
+            <div id="dlcontainer" class="dlcontainer" style="display: none;">
+                <div class="dlfilename" id="dlfilename"></div>
+                <div
+                    class="animated-progress progress-blue"
+                    style="position: inherit"
+                >
+                    <span id="dlprogress" style="width: 50%;">50%</span>
+                </div>
+            </div>
         </div>
     </body>
 </html>

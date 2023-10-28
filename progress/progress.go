@@ -57,8 +57,8 @@ type progress struct {
 	fifoPath string
 }
 
-func NewProgress(sdhost string, fifoPath string) *progress {
-	return &progress{b: events.NewBroker(), sdhost: sdhost, fifoPath: fifoPath}
+func NewProgress(broker *events.Broker, sdhost string, fifoPath string) *progress {
+	return &progress{b: broker, sdhost: sdhost, fifoPath: fifoPath}
 }
 
 func (p *progress) updater() {

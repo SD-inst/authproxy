@@ -6,6 +6,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,17 +14,34 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/antchfx/htmlquery"
 	"github.com/dustin/go-humanize"
 	"github.com/labstack/echo/v4"
+	"github.com/rkfg/authproxy/events"
 	"golang.org/x/sys/unix"
 )
 
 //go:embed webroot
 var webroot embed.FS
 
+type dlTask struct {
+	link string
+	dir  string
+}
+
 type uploader struct {
-	root string
+	root   string
+	broker *events.Broker
+	dlc    chan dlTask
+	c      http.Client
+}
+
+type downloadProgress struct {
+	Filename       string `json:"filename"`
+	TotalBytes     int64  `json:"total_bytes"`
+	CompletedBytes int64  `json:"completed_bytes"`
 }
 
 type Result map[string]interface{}
@@ -59,6 +77,19 @@ func validateName(dir string) bool {
 	return !validateRegexp.MatchString(dir)
 }
 
+func validateFilename(fn string) error {
+	if !filepath.IsLocal(fn) {
+		return fmt.Errorf("invalid file name")
+	}
+	if !validateName(fn) {
+		return fmt.Errorf("Invalid file name")
+	}
+	if !strings.HasSuffix(fn, ".safetensors") {
+		return fmt.Errorf("only safetensors are supported")
+	}
+	return nil
+}
+
 func (u *uploader) postFiles(c echo.Context) error {
 	rawdir := c.FormValue("dir")
 	if !validateName(rawdir) {
@@ -87,14 +118,8 @@ func (u *uploader) postFiles(c echo.Context) error {
 		if file.Size > 1024*1024*1024 { // 1 Gb
 			return JSONErrorMessage(c, 400, "file too big")
 		}
-		if !filepath.IsLocal(file.Filename) {
-			return JSONErrorMessage(c, 400, "invalid file name")
-		}
-		if !validateName(file.Filename) {
-			return JSONErrorMessage(c, 400, "Invalid file name")
-		}
-		if !strings.HasSuffix(file.Filename, ".safetensors") {
-			return JSONErrorMessage(c, 400, "only safetensors are supported")
+		if err := validateFilename(file.Filename); err != nil {
+			return JSONError(c, 400, err)
 		}
 		source, err := file.Open()
 		if err != nil {
@@ -161,12 +186,136 @@ func (u *uploader) stat(c echo.Context) error {
 	return JSONOk(c, Result{"free": humanize.IBytes(stat.Bavail * uint64(stat.Bsize))})
 }
 
-func NewUploader(api *echo.Group, rootPath string) *uploader {
+func (u *uploader) download(c echo.Context) error {
+	var params struct {
+		URL string `form:"url"`
+		Dir string `form:"dir"`
+	}
+	c.Bind(&params)
+	if !validateName(params.Dir) {
+		u.dlError("Invalid directory name: %s", params.Dir)
+		return nil
+	}
+	dir, err := url.QueryUnescape(params.Dir)
+	if err != nil {
+		u.dlError("Error parsing directory path: %s", err)
+		return nil
+	}
+	cu, err := url.Parse(params.URL)
+	if err != nil {
+		u.dlError("Invalid URL: " + err.Error())
+		return nil
+	}
+	if cu.Host != "civitai.com" {
+		u.dlError("Only civitai.com is supported")
+		return nil
+	}
+	if !strings.HasPrefix(cu.Path, "/models/") {
+		u.dlError("Use the model page URL")
+		return nil
+	}
+	req, err := http.NewRequest("GET", params.URL, nil)
+	if err != nil {
+		u.dlError("Error making request: %s", err)
+		return nil
+	}
+	resp, err := u.c.Do(req)
+	if err != nil {
+		u.dlError("Error accessing CivitAI: %s", err)
+		return nil
+	}
+	root, err := htmlquery.Parse(resp.Body)
+	if err != nil {
+		u.dlError("Error parsing CivitAI: %s", err)
+		return nil
+	}
+	typeNode := htmlquery.FindOne(root, "//div[contains(@class, 'mantine-Badge-root')]/span[contains(text(), 'LoRA')]|//div[contains(@class, 'mantine-Badge-root')]/span[contains(text(), 'LyCORIS')]")
+	if typeNode == nil {
+		u.dlError("Only LoRA download is supported. Either this content isn't LoRA or it's marked as NSFW.")
+		return nil
+	}
+	downloadUrl := htmlquery.FindOne(root, `//a[@type="button" and starts-with(@href, "/api/download/models/")]`)
+	modelUrl := htmlquery.SelectAttr(downloadUrl, "href")
+	u.dlc <- dlTask{link: "https://civitai.com" + modelUrl, dir: dir}
+	return nil
+}
+
+func (u *uploader) dlMsg(msgType string, msg string, params ...any) {
+	u.broker.Broadcast(events.Packet{Type: events.MESSAGE_UPDATE, Ephemeral: true, Data: events.MessageUpdate{Message: fmt.Sprintf(msg, params...), Type: msgType, Subsystem: "download"}})
+}
+
+func (u *uploader) dlError(msg string, params ...any) {
+	u.dlMsg("error", msg, params...)
+}
+
+func (u *uploader) dlSuccess(msg string, params ...any) {
+	u.dlMsg("success", msg, params...)
+}
+
+func (u *uploader) startDownloader() {
+	for task := range u.dlc {
+		func() {
+			req, err := http.NewRequest("GET", task.link, nil)
+			if err != nil {
+				u.dlError("Error making request: %s", err)
+				return
+			}
+			resp, err := u.c.Do(req)
+			if err != nil {
+				u.dlError("Error downloading %s: %s", task.link, err)
+				return
+			}
+			_, params, err := mime.ParseMediaType(resp.Header.Get(echo.HeaderContentDisposition))
+			if err != nil {
+				u.dlError("Error parsing disposition (check if you can download the file in incognito): %s", err)
+				return
+			}
+			fn := params["filename"]
+			fullpath, err := u.fullPath(task.dir)
+			if err != nil {
+				u.dlError("Invalid filename: %s", err)
+				return
+			}
+			if err := validateFilename(fn); err != nil {
+				u.dlError("Invalid full path %s: %s", fullpath, err)
+				return
+			}
+			fullpath = filepath.Join(fullpath, fn)
+			f, err := os.Create(fullpath)
+			if err != nil {
+				u.dlError("Error creating file %s: %s", fullpath, err)
+				return
+			}
+			defer f.Close()
+			total := resp.ContentLength
+			dl := int64(0)
+			for {
+				n, err := io.CopyN(f, resp.Body, 1024*1024*10)
+				dl += n
+				if err != nil {
+					u.broker.Broadcast(events.Packet{Type: events.DOWNLOAD_UPDATE, Data: downloadProgress{}})
+					if err == io.EOF {
+						u.dlSuccess("File %s downloaded", fn)
+					} else {
+						u.dlError("Error during download: %s", err)
+					}
+					return
+				}
+				u.broker.Broadcast(events.Packet{Type: events.DOWNLOAD_UPDATE, Data: downloadProgress{Filename: fn, TotalBytes: total, CompletedBytes: dl}})
+			}
+		}()
+	}
+}
+
+func NewUploader(api *echo.Group, rootPath string, broker *events.Broker) *uploader {
 	os.MkdirAll(rootPath, 0755)
-	result := uploader{root: rootPath}
+	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask)}
+	result.c.Timeout = time.Second * 30
 	api.StaticFS("*", echo.MustSubFS(webroot, "webroot"))
 	api.GET("/files", result.listFiles)
 	api.GET("/stat", result.stat)
 	api.POST("/files", result.postFiles)
+	api.POST("/download", result.download)
+	go result.startDownloader()
 	return &result
 }
