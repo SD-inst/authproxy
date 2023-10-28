@@ -30,6 +30,8 @@ var params struct {
 	LLMModel     string `long:"llm-model" description:"LLM model to autoload"`
 	LLMArgs      string `long:"llm-args" description:"JSON-formatted parameters to load the model and loras"`
 	LoRAPath     string `long:"lora-path" description:"Path to the directory for LoRA uploads"`
+	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
+	FIFOPath     string `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string
 }
 
@@ -76,7 +78,9 @@ func main() {
 	e.GET("/login", loginPageHandler)
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
-	progress.AddHandlers(e.Group("/q"))
+	pr := progress.NewProgress(params.SDHost, params.FIFOPath)
+	pr.AddHandlers(e.Group("/q"))
+	pr.Start()
 	tgturl, err := url.Parse(params.TargetURL)
 	if err != nil {
 		log.Fatal(err)

@@ -14,7 +14,7 @@
                 "-f",
                 "users.txt",
                 "-t",
-                "http://127.0.0.1:8001",
+                "http://127.0.0.1:7863",
                 "--llm-url",
                 "http://172.25.10.35:7861",
                 "--llm-timeout",
@@ -25,6 +25,8 @@
                 "{\"max_seq_len\": 8192, \"alpha_value\": 8, \"lora\": [\"nRuaif_Kimiko_13B\"]}",
                 "--lora-path",
                 "/tmp/lora",
+                "--sd-host",
+                "http://127.0.0.1:7863",
                 "-l",
                 "0.0.0.0:8005"
             ]
