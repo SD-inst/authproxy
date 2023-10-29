@@ -32,10 +32,11 @@ type dlTask struct {
 }
 
 type uploader struct {
-	root   string
-	broker *events.Broker
-	dlc    chan dlTask
-	c      http.Client
+	root       string
+	broker     *events.Broker
+	dlc        chan dlTask
+	pageclient http.Client
+	dlclient   http.Client
 }
 
 type downloadProgress struct {
@@ -82,7 +83,7 @@ func validateFilename(fn string) error {
 		return fmt.Errorf("invalid file name")
 	}
 	if !validateName(fn) {
-		return fmt.Errorf("Invalid file name")
+		return fmt.Errorf("invalid file name")
 	}
 	if !strings.HasSuffix(fn, ".safetensors") {
 		return fmt.Errorf("only safetensors are supported")
@@ -219,7 +220,7 @@ func (u *uploader) download(c echo.Context) error {
 		u.dlError("Error making request: %s", err)
 		return nil
 	}
-	resp, err := u.c.Do(req)
+	resp, err := u.pageclient.Do(req)
 	if err != nil {
 		u.dlError("Error accessing CivitAI: %s", err)
 		return nil
@@ -260,7 +261,7 @@ func (u *uploader) startDownloader() {
 				u.dlError("Error making request: %s", err)
 				return
 			}
-			resp, err := u.c.Do(req)
+			resp, err := u.dlclient.Do(req)
 			if err != nil {
 				u.dlError("Error downloading %s: %s", task.link, err)
 				return
@@ -299,6 +300,7 @@ func (u *uploader) startDownloader() {
 						u.dlSuccess("File %s downloaded", fn)
 					} else {
 						u.dlError("Error during download: %s", err)
+						defer os.Remove(fullpath)
 					}
 					return
 				}
@@ -311,7 +313,7 @@ func (u *uploader) startDownloader() {
 func NewUploader(api *echo.Group, rootPath string, broker *events.Broker) *uploader {
 	os.MkdirAll(rootPath, 0755)
 	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask)}
-	result.c.Timeout = time.Second * 30
+	result.pageclient.Timeout = time.Second * 30
 	api.StaticFS("*", echo.MustSubFS(webroot, "webroot"))
 	api.GET("/files", result.listFiles)
 	api.GET("/stat", result.stat)
