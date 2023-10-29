@@ -289,6 +289,7 @@ func (u *uploader) startDownloader() {
 			defer f.Close()
 			total := resp.ContentLength
 			dl := int64(0)
+			log.Printf("Starting remote download: %s => %s", task.link, fullpath)
 			for {
 				n, err := io.CopyN(f, resp.Body, 1024*1024*10)
 				dl += n
