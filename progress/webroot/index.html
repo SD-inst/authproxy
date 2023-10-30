@@ -39,8 +39,8 @@
                     const data = packet.data;
                     switch (type) {
                         case 'progress':
-                            document.getElementById('queued').innerText =
-                                data.queue;
+                            document.getElementById('tasks').innerText =
+                                '' + data.current + (data.queued ? ` [${data.queued} queued]` : '');
                             document
                                 .getElementById('progress')
                                 .style.setProperty(
@@ -121,7 +121,7 @@
                     Connection lost
                 </div>
                 <div class="mui--text-body1">
-                    Queued: <span id="queued">0</span>
+                    Tasks: <span id="tasks">0</span>
                 </div>
                 <div
                     style="

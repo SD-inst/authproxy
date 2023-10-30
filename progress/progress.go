@@ -25,7 +25,8 @@ var webroot embed.FS
 const maxTaskDuration = time.Minute * 5
 
 type ProgressUpdate struct {
-	Queue        int       `json:"queue"`
+	Queued       int       `json:"queued"`
+	Current      int       `json:"current"`
 	Progress     float64   `json:"progress"`
 	ETA          int       `json:"eta"`
 	Description  string    `json:"description"`
@@ -42,6 +43,7 @@ type GPUUpdate struct {
 type sdprogress struct {
 	Progress    float64 `json:"progress"`
 	EtaRelative float64 `json:"eta_relative"`
+	QueueSize   int     `json:"queue_size"`
 	State       struct {
 		JobTimestamp  string `json:"job_timestamp"`
 		Job           string `json:"job"`
@@ -82,11 +84,13 @@ func (p *progress) updater() {
 				jobStart = time.Now()
 			}
 		}
+		log.Printf("%+v", sdp)
 		if lastProgress != sdp.Progress {
 			p.b.Broadcast(events.Packet{
 				Type: events.PROGRESS_UPDATE,
 				Data: ProgressUpdate{
-					Queue:        sdp.State.JobCount,
+					Current:      sdp.State.JobCount,
+					Queued:       sdp.QueueSize,
 					Progress:     sdp.Progress,
 					ETA:          int(sdp.EtaRelative),
 					Description:  fmt.Sprintf("%s %d/%d steps", "rendering", sdp.State.SamplingStep, sdp.State.SamplingSteps),
