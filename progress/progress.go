@@ -84,7 +84,6 @@ func (p *progress) updater() {
 				jobStart = time.Now()
 			}
 		}
-		log.Printf("%+v", sdp)
 		if lastProgress != sdp.Progress {
 			p.b.Broadcast(events.Packet{
 				Type: events.PROGRESS_UPDATE,
