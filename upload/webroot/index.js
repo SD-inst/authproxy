@@ -131,6 +131,7 @@ async function createDir() {
 async function uploadFile() {
     const inp = document.createElement('input');
     inp.type = 'file';
+    inp.accept = '.safetensors';
     inp.onchange = async function () {
         const loading = document.createElement('div');
         loading.setAttribute('class', 'loading');
