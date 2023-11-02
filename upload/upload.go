@@ -92,13 +92,9 @@ func validateFilename(fn string) error {
 }
 
 func (u *uploader) postFiles(c echo.Context) error {
-	rawdir := c.FormValue("dir")
-	if !validateName(rawdir) {
+	dir := c.FormValue("dir")
+	if !validateName(dir) {
 		return JSONErrorMessage(c, 400, "Invalid directory name")
-	}
-	dir, err := url.QueryUnescape(rawdir)
-	if err != nil {
-		JSONError(c, 400, err)
 	}
 	typ := c.FormValue("type")
 	fullpath, err := u.fullPath(dir)
@@ -141,10 +137,7 @@ func (u *uploader) postFiles(c echo.Context) error {
 }
 
 func (u *uploader) listFiles(c echo.Context) error {
-	dir, err := url.QueryUnescape(c.QueryParam("dir"))
-	if err != nil {
-		JSONError(c, 400, err)
-	}
+	dir := c.QueryParam("dir")
 	fullpath, err := u.fullPath(dir)
 	if err != nil {
 		return JSONError(c, 400, err)
@@ -197,11 +190,6 @@ func (u *uploader) download(c echo.Context) error {
 		u.dlError("Invalid directory name: %s", params.Dir)
 		return nil
 	}
-	dir, err := url.QueryUnescape(params.Dir)
-	if err != nil {
-		u.dlError("Error parsing directory path: %s", err)
-		return nil
-	}
 	cu, err := url.Parse(params.URL)
 	if err != nil {
 		u.dlError("Invalid URL: " + err.Error())
@@ -237,7 +225,7 @@ func (u *uploader) download(c echo.Context) error {
 	}
 	downloadUrl := htmlquery.FindOne(root, `//a[@type="button" and starts-with(@href, "/api/download/models/")]`)
 	modelUrl := htmlquery.SelectAttr(downloadUrl, "href")
-	u.dlc <- dlTask{link: "https://civitai.com" + modelUrl, dir: dir}
+	u.dlc <- dlTask{link: "https://civitai.com" + modelUrl, dir: params.Dir}
 	return nil
 }
 
@@ -274,11 +262,11 @@ func (u *uploader) startDownloader() {
 			fn := params["filename"]
 			fullpath, err := u.fullPath(task.dir)
 			if err != nil {
-				u.dlError("Invalid filename: %s", err)
+				u.dlError("Invalid directory %s: %s", task.dir, err)
 				return
 			}
 			if err := validateFilename(fn); err != nil {
-				u.dlError("Invalid full path %s: %s", fullpath, err)
+				u.dlError("Invalid filename %s: %s", fn, err)
 				return
 			}
 			fullpath = filepath.Join(fullpath, fn)

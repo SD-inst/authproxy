@@ -1,7 +1,7 @@
 let sort = ['name', 'asc'];
 
 function getCurrentPath() {
-    let currentPath = location.hash;
+    let currentPath = decodeURI(location.hash);
     if (currentPath.startsWith('#')) {
         currentPath = currentPath.substring(1);
     }
@@ -44,7 +44,7 @@ async function load() {
             <img src='images/up.png' class='icon' style='margin-bottom: 20px' />
         </a><div>`;
     }
-    document.getElementById('path').innerText = decodeURIComponent(currentPath);
+    document.getElementById('path').innerText = currentPath;
     const result = await fetch('files?dir=' + encodeURIComponent(currentPath));
     if (result.status != 200) {
         alertError(result);
