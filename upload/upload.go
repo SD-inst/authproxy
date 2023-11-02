@@ -161,6 +161,9 @@ func (u *uploader) listFiles(c echo.Context) error {
 		if f.IsDir() {
 			t = "dir"
 		}
+		if !strings.HasSuffix(strings.ToLower(f.Name()), ".safetensors") {
+			continue
+		}
 		fi := fileItem{Type: t, Name: html.EscapeString(f.Name())}
 		if info, err := f.Info(); err != nil {
 			log.Printf("Error getting file %s info: %s", f.Name(), err)
