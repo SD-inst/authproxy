@@ -2,6 +2,7 @@ package upload
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
@@ -16,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/antchfx/htmlquery"
 	"github.com/dustin/go-humanize"
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/events"
@@ -53,7 +53,10 @@ type fileItem struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-var validateRegexp = regexp.MustCompile(`[*<>]`)
+var (
+	validateRegexp = regexp.MustCompile(`[*<>]`)
+	modelRegex     = regexp.MustCompile(`/models/(\d+)`)
+)
 
 func JSONOk(c echo.Context, r interface{}) error {
 	return c.JSON(http.StatusOK, r)
@@ -202,33 +205,59 @@ func (u *uploader) download(c echo.Context) error {
 		u.dlError("Only civitai.com is supported")
 		return nil
 	}
-	if !strings.HasPrefix(cu.Path, "/models/") {
+	m := modelRegex.FindStringSubmatch(cu.Path)
+	if m == nil {
 		u.dlError("Use the model page URL")
 		return nil
 	}
-	req, err := http.NewRequest("GET", params.URL, nil)
-	if err != nil {
-		u.dlError("Error making request: %s", err)
-		return nil
+	mvid := cu.Query().Get("modelVersionId")
+	if mvid != "" {
+		resp, err := u.pageclient.Get("https://civitai.com/api/v1/model-versions/" + mvid)
+		if err != nil {
+			u.dlError("Error accessing CivitAI: %s", err)
+			return nil
+		}
+		if resp.StatusCode != 200 {
+			u.dlError("Error accessing CivitAI: code %d", resp.StatusCode)
+		}
+		var respModel struct {
+			DownloadURL string `json:"downloadUrl"`
+			Model       struct {
+				Type string `json:"type"`
+			}
+		}
+		json.NewDecoder(resp.Body).Decode(&respModel)
+		if respModel.Model.Type != "LORA" && respModel.Model.Type != "LoCon" {
+			u.dlError("Only LoRA download is supported, this is %s", respModel.Model.Type)
+			return nil
+		}
+		u.dlc <- dlTask{link: respModel.DownloadURL, dir: params.Dir}
+	} else {
+		resp, err := u.pageclient.Get("https://civitai.com/api/v1/models/" + m[1])
+		if err != nil {
+			u.dlError("Error accessing CivitAI: %s", err)
+			return nil
+		}
+		if resp.StatusCode != 200 {
+			u.dlError("Error accessing CivitAI: code %d", resp.StatusCode)
+		}
+		var respModel struct {
+			Type          string `json:"type"`
+			ModelVersions []struct {
+				DownloadURL string `json:"downloadUrl"`
+			}
+		}
+		json.NewDecoder(resp.Body).Decode(&respModel)
+		if respModel.Type != "LORA" && respModel.Type != "LoCon" {
+			u.dlError("Only LoRA download is supported, this is %s", respModel.Type)
+			return nil
+		}
+		if len(respModel.ModelVersions) == 0 {
+			u.dlError("No model versions found.")
+			return nil
+		}
+		u.dlc <- dlTask{link: respModel.ModelVersions[0].DownloadURL, dir: params.Dir}
 	}
-	resp, err := u.pageclient.Do(req)
-	if err != nil {
-		u.dlError("Error accessing CivitAI: %s", err)
-		return nil
-	}
-	root, err := htmlquery.Parse(resp.Body)
-	if err != nil {
-		u.dlError("Error parsing CivitAI: %s", err)
-		return nil
-	}
-	typeNode := htmlquery.FindOne(root, "//div[contains(@class, 'mantine-Badge-root')]/span[contains(text(), 'LoRA')]|//div[contains(@class, 'mantine-Badge-root')]/span[contains(text(), 'LyCORIS')]")
-	if typeNode == nil {
-		u.dlError("Only LoRA download is supported. Either this content isn't LoRA or it's marked as NSFW.")
-		return nil
-	}
-	downloadUrl := htmlquery.FindOne(root, `//a[@type="button" and starts-with(@href, "/api/download/models/")]`)
-	modelUrl := htmlquery.SelectAttr(downloadUrl, "href")
-	u.dlc <- dlTask{link: "https://civitai.com" + modelUrl, dir: params.Dir}
 	return nil
 }
 
@@ -257,9 +286,10 @@ func (u *uploader) startDownloader() {
 				u.dlError("Error downloading %s: %s", task.link, err)
 				return
 			}
-			_, params, err := mime.ParseMediaType(resp.Header.Get(echo.HeaderContentDisposition))
+			disp := resp.Header.Get(echo.HeaderContentDisposition)
+			_, params, err := mime.ParseMediaType(disp)
 			if err != nil {
-				u.dlError("Error parsing disposition (check if you can download the file in incognito): %s", err)
+				u.dlError("Error parsing disposition (check if you can download the file in incognito), disposition: '%s': %s", disp, err)
 				return
 			}
 			fn := params["filename"]
