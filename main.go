@@ -34,6 +34,7 @@ var params struct {
 	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
 	FIFOPath     string `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string
+	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
 }
 
 func main() {
@@ -114,7 +115,7 @@ func main() {
 		e.GET("/api/v1/model", llm.handleModel)
 	}
 	if params.LoRAPath != "" {
-		upload.NewUploader(e.Group("/upload"), params.LoRAPath, broker)
+		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker)
 	}
 	e.Start(params.Address)
 }

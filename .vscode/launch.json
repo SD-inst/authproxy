@@ -27,6 +27,8 @@
                 "/tmp/lora",
                 "--sd-host",
                 "http://127.0.0.1:7863",
+                "--cookie-file",
+                "cookie.txt",
                 "-l",
                 "0.0.0.0:8005"
             ]

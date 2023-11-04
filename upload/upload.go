@@ -9,6 +9,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -26,6 +27,8 @@ import (
 //go:embed webroot
 var webroot embed.FS
 
+const civitaiToken = "__Secure-civitai-token"
+
 type dlTask struct {
 	link string
 	dir  string
@@ -37,6 +40,7 @@ type uploader struct {
 	dlc        chan dlTask
 	pageclient http.Client
 	dlclient   http.Client
+	cookieFile string
 }
 
 type downloadProgress struct {
@@ -334,10 +338,46 @@ func (u *uploader) startDownloader() {
 	}
 }
 
-func NewUploader(api *echo.Group, rootPath string, broker *events.Broker) *uploader {
+func (u *uploader) cookieRefresher() {
+	civiturl, _ := url.Parse("https://civitai.com")
+	for {
+		req, _ := http.NewRequest("GET", "https://civitai.com/api/trpc/user.checkNotifications", nil)
+		req.Header.Add("Referer", "https://civitai.com/models")
+		_, err := u.dlclient.Do(req)
+		if err != nil {
+			log.Printf("Error refreshing cookie: %s", err)
+		}
+		cookies := u.dlclient.Jar.Cookies(civiturl)
+		for _, c := range cookies {
+			if c.Name == civitaiToken {
+				os.WriteFile(u.cookieFile, []byte(c.Value), 0644)
+			}
+		}
+		time.Sleep(24 * time.Hour)
+	}
+}
+
+func (u *uploader) loadCookies() {
+	var err error
+	u.dlclient.Jar, err = cookiejar.New(nil)
+	if err != nil {
+		log.Printf("Error creating cookie jar: %s", err)
+		return
+	}
+	token, err := os.ReadFile(u.cookieFile)
+	if err != nil {
+		log.Printf("Error reading cookie file")
+	}
+	civiturl, _ := url.Parse("https://civitai.com")
+	u.dlclient.Jar.SetCookies(civiturl, []*http.Cookie{{Name: civitaiToken, Value: string(token)}})
+}
+
+func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *events.Broker) *uploader {
 	os.MkdirAll(rootPath, 0755)
-	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask)}
+	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile}
 	result.pageclient.Timeout = time.Second * 30
+	result.loadCookies()
+	go result.cookieRefresher()
 	api.StaticFS("*", echo.MustSubFS(webroot, "webroot"))
 	api.GET("/files", result.listFiles)
 	api.GET("/stat", result.stat)
