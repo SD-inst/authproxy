@@ -350,7 +350,10 @@ func (u *uploader) cookieRefresher() {
 		cookies := u.dlclient.Jar.Cookies(civiturl)
 		for _, c := range cookies {
 			if c.Name == civitaiToken {
-				os.WriteFile(u.cookieFile, []byte(c.Value), 0644)
+				err = os.WriteFile(u.cookieFile, []byte(c.Value), 0644)
+				if err != nil {
+					log.Printf("Error saving cookie: %s", err)
+				}
 			}
 		}
 		time.Sleep(24 * time.Hour)
