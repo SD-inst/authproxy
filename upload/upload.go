@@ -20,6 +20,7 @@ import (
 
 	"github.com/dustin/go-humanize"
 	"github.com/labstack/echo/v4"
+	"github.com/rkfg/authproxy/civitai"
 	"github.com/rkfg/authproxy/events"
 	"golang.org/x/sys/unix"
 )
@@ -41,6 +42,7 @@ type uploader struct {
 	pageclient http.Client
 	dlclient   http.Client
 	cookieFile string
+	civitdl    *civitai.Downloader
 }
 
 type downloadProgress struct {
@@ -139,6 +141,12 @@ func (u *uploader) postFiles(c echo.Context) error {
 		if err != nil {
 			return JSONError(c, 400, err)
 		}
+		go func() {
+			err := u.civitdl.UpdateFile(target.Name())
+			if err != nil {
+				log.Printf("Error getting metadata from CivitAI: %s", err)
+			}
+		}()
 	}
 	return nil
 }
@@ -274,10 +282,12 @@ func (u *uploader) dlMsg(msgType string, msg string, params ...any) {
 
 func (u *uploader) dlError(msg string, params ...any) {
 	u.dlMsg("error", msg, params...)
+	log.Printf("Error: "+msg, params...)
 }
 
 func (u *uploader) dlSuccess(msg string, params ...any) {
 	u.dlMsg("success", msg, params...)
+	log.Printf("Success: "+msg, params...)
 }
 
 func (u *uploader) startDownloader() {
@@ -326,6 +336,12 @@ func (u *uploader) startDownloader() {
 					u.broker.Broadcast(events.Packet{Type: events.DOWNLOAD_UPDATE, Data: downloadProgress{}})
 					if err == io.EOF {
 						u.dlSuccess("File %s downloaded", fn)
+						go func() {
+							err := u.civitdl.UpdateFile(f.Name())
+							if err != nil {
+								log.Printf("Error getting metadata from CivitAI: %s", err)
+							}
+						}()
 					} else {
 						u.dlError("Error during download: %s", err)
 						defer os.Remove(fullpath)
@@ -377,7 +393,7 @@ func (u *uploader) loadCookies() {
 
 func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *events.Broker) *uploader {
 	os.MkdirAll(rootPath, 0755)
-	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile}
+	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile, civitdl: civitai.NewDownloader()}
 	result.pageclient.Timeout = time.Second * 30
 	result.loadCookies()
 	go result.cookieRefresher()
