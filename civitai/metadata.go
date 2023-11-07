@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -30,22 +31,31 @@ func exists(filename string) bool {
 }
 
 func (d *Downloader) UpdateFile(filename string) error {
+	oldumask := syscall.Umask(0111)
+	defer syscall.Umask(oldumask)
 	ext := filepath.Ext(filename)
 	if ext != ".safetensors" {
 		return fmt.Errorf("invalid extension")
 	}
 	filebase := filename[:len(filename)-len(ext)]
 	preview := filebase + ".preview.png"
-	if exists(preview) {
+	jsonfilename := filebase + ".json"
+	if exists(preview) || exists(jsonfilename) {
 		return nil
 	}
-	f, err := os.Open(filename)
+	modelfile, err := os.Open(filename)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer modelfile.Close()
+	jsonfile, err := os.Create(jsonfilename)
+	if err != nil {
+		return err
+	}
+	defer jsonfile.Close()
+
 	h := sha256.New()
-	_, err = io.Copy(h, f)
+	_, err = io.Copy(h, modelfile)
 	if err != nil {
 		return err
 	}
@@ -85,11 +95,7 @@ func (d *Downloader) UpdateFile(filename string) error {
 	}
 	metadata.ActivationText = strings.Join(civitaiMetadata.TrainedWords, "; ")
 
-	f, err = os.Create(filebase + ".json")
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(f)
+	enc := json.NewEncoder(jsonfile)
 	enc.SetIndent("", "    ")
 	err = enc.Encode(metadata)
 	if err != nil {
@@ -102,12 +108,12 @@ func (d *Downloader) UpdateFile(filename string) error {
 			if err != nil {
 				return err
 			}
-			f, err = os.Create(preview)
+			previewfile, err := os.Create(preview)
 			if err != nil {
 				return err
 			}
-			defer f.Close()
-			_, err = io.Copy(f, resp.Body)
+			defer previewfile.Close()
+			_, err = io.Copy(previewfile, resp.Body)
 			if err != nil {
 				return err
 			}
