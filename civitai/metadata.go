@@ -65,6 +65,7 @@ func (d *Downloader) UpdateFile(filename string) error {
 		return err
 	}
 	if resp.StatusCode == 404 {
+		jsonfile.WriteString("{}")
 		return fmt.Errorf("model %s not found on CivitAI", filepath.Base(filename))
 	}
 	var civitaiMetadata struct {
