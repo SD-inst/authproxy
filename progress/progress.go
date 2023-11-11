@@ -82,14 +82,12 @@ func (p *progress) updater() {
 		if lastID != sdp.State.Job {
 			if sdp.State.Job != "" {
 				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
-			} else {
-				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: float64(time.Since(jobStart).Seconds())}
+			}
+			if lastID != "" {
+				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
 			}
 			lastID = sdp.State.Job
-			jobStart, _ = time.ParseInLocation("20060102150405", sdp.State.JobTimestamp, time.Local)
-			if time.Since(jobStart) > time.Hour { // sanity check
-				jobStart = time.Now()
-			}
+			jobStart = time.Now()
 		}
 		if lastProgress != sdp.Progress {
 			p.b.Broadcast(events.Packet{
