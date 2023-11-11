@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/rkfg/authproxy/events"
+	"github.com/rkfg/authproxy/metrics"
 	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/upload"
 	"golang.org/x/crypto/bcrypt"
@@ -69,19 +70,20 @@ func main() {
 		log.Fatal(err)
 	}
 	e := echo.New()
+	mchan := metrics.NewMetrics(e)
 	e.Use(echojwt.WithConfig(echojwt.Config{
 		SigningKey:   []byte(params.JWTSecret),
 		ErrorHandler: keyErrorHandler,
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
-			return c.Path() == "/login" || strings.HasPrefix(c.Path(), "/api/")
+			return c.Path() == "/login" || c.Path() == "/metrics" || strings.HasPrefix(c.Path(), "/api/")
 		},
 	}))
 	e.GET("/login", loginPageHandler)
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
-	pr := progress.NewProgress(broker, params.SDHost, params.FIFOPath)
+	pr := progress.NewProgress(broker, params.SDHost, params.FIFOPath, mchan)
 	pr.AddHandlers(e.Group("/q"))
 	pr.Start()
 	tgturl, err := url.Parse(params.TargetURL)
@@ -115,7 +117,7 @@ func main() {
 		e.GET("/api/v1/model", llm.handleModel)
 	}
 	if params.LoRAPath != "" {
-		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker)
+		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker, mchan)
 	}
 	e.Start(params.Address)
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/events"
+	"github.com/rkfg/authproxy/metrics"
 )
 
 //go:embed webroot
@@ -57,10 +58,11 @@ type progress struct {
 	b        *events.Broker
 	sdhost   string
 	fifoPath string
+	m        chan<- metrics.MetricUpdate
 }
 
-func NewProgress(broker *events.Broker, sdhost string, fifoPath string) *progress {
-	return &progress{b: broker, sdhost: sdhost, fifoPath: fifoPath}
+func NewProgress(broker *events.Broker, sdhost string, fifoPath string, m chan<- metrics.MetricUpdate) *progress {
+	return &progress{b: broker, sdhost: sdhost, fifoPath: fifoPath, m: m}
 }
 
 func (p *progress) updater() {
@@ -78,6 +80,11 @@ func (p *progress) updater() {
 		var sdp sdprogress
 		json.NewDecoder(resp.Body).Decode(&sdp)
 		if lastID != sdp.State.Job {
+			if sdp.State.Job != "" {
+				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
+			} else {
+				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: float64(time.Since(jobStart).Seconds())}
+			}
 			lastID = sdp.State.Job
 			jobStart, _ = time.ParseInLocation("20060102150405", sdp.State.JobTimestamp, time.Local)
 			if time.Since(jobStart) > time.Hour { // sanity check
@@ -97,6 +104,7 @@ func (p *progress) updater() {
 					TaskDuration: time.Since(jobStart).Truncate(time.Second).String(),
 				}})
 			lastProgress = sdp.Progress
+			p.m <- metrics.MetricUpdate{Type: metrics.QUEUE_LENGTH, Value: float64(sdp.QueueSize)}
 		}
 		if p.fifoPath != "" && time.Since(jobStart) > maxTaskDuration && sdp.Progress > 0 {
 			log.Printf("Task execution time exceeded %s, restarting", maxTaskDuration.String())
@@ -133,6 +141,8 @@ func (p *progress) gpuStatus() {
 		free, _ := strconv.ParseUint(split[1], 10, 64)
 		total, _ := strconv.ParseUint(split[2], 10, 64)
 		p.b.Broadcast(events.Packet{Type: events.GPU_UPDATE, Data: GPUUpdate{Free: free, Used: used, Total: total}})
+		p.m <- metrics.MetricUpdate{Type: metrics.GPU_FREE_MEMORY, Value: float64(free)}
+		p.m <- metrics.MetricUpdate{Type: metrics.GPU_USED_MEMORY, Value: float64(used)}
 	}
 	cmd.Wait()
 }

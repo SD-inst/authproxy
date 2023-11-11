@@ -22,6 +22,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/civitai"
 	"github.com/rkfg/authproxy/events"
+	"github.com/rkfg/authproxy/metrics"
 	"golang.org/x/sys/unix"
 )
 
@@ -43,6 +44,7 @@ type uploader struct {
 	dlclient   http.Client
 	cookieFile string
 	civitdl    *civitai.Downloader
+	m          chan<- metrics.MetricUpdate
 }
 
 type downloadProgress struct {
@@ -141,6 +143,8 @@ func (u *uploader) postFiles(c echo.Context) error {
 		if err != nil {
 			return JSONError(c, 400, err)
 		}
+		u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_COUNT, Value: 1}
+		u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_SIZE, Value: float64(file.Size)}
 		go func() {
 			err := u.civitdl.UpdateFile(target.Name())
 			if err != nil {
@@ -336,6 +340,8 @@ func (u *uploader) startDownloader() {
 					u.broker.Broadcast(events.Packet{Type: events.DOWNLOAD_UPDATE, Data: downloadProgress{}})
 					if err == io.EOF {
 						u.dlSuccess("File %s downloaded", fn)
+						u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_COUNT, Value: 1}
+						u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_SIZE, Value: float64(dl)}
 						go func() {
 							err := u.civitdl.UpdateFile(f.Name())
 							if err != nil {
@@ -391,9 +397,9 @@ func (u *uploader) loadCookies() {
 	u.dlclient.Jar.SetCookies(civiturl, []*http.Cookie{{Name: civitaiToken, Value: string(token)}})
 }
 
-func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *events.Broker) *uploader {
+func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *events.Broker, m chan<- metrics.MetricUpdate) *uploader {
 	os.MkdirAll(rootPath, 0755)
-	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile, civitdl: civitai.NewDownloader()}
+	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile, civitdl: civitai.NewDownloader(), m: m}
 	result.pageclient.Timeout = time.Second * 30
 	result.loadCookies()
 	go result.cookieRefresher()
