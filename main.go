@@ -76,7 +76,7 @@ func main() {
 		ErrorHandler: keyErrorHandler,
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
-			return c.Path() == "/login" || c.Path() == "/metrics" || strings.HasPrefix(c.Path(), "/api/")
+			return c.Path() == "/login" || c.Path() == "/metrics" || strings.HasPrefix(c.Path(), "/v1/")
 		},
 	}))
 	e.GET("/login", loginPageHandler)
@@ -111,10 +111,13 @@ func main() {
 		llm.modelName = params.LLMModel
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
 		llm.updateTimeout()
-		e.Group("/api/*", middleware.ProxyWithConfig(middleware.ProxyConfig{
+		e.Group("/v1/*", middleware.ProxyWithConfig(middleware.ProxyConfig{
 			Balancer: llm,
 		}))
-		e.GET("/api/v1/model", llm.handleModel)
+		e.GET("/v1/internal/model/info", llm.handleModel)
+		e.Any("/v1/internal/*", llm.forbidden)
+		e.GET("/v1/models", llm.handleModels)
+		e.GET("/v1/models/*", llm.forbidden)
 	}
 	if params.LoRAPath != "" {
 		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker, mchan)

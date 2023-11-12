@@ -29,7 +29,15 @@ type TBody map[string]any
 
 func parseBody(resp io.ReadCloser) (TBody, error) {
 	b := TBody{}
-	return b, json.NewDecoder(resp).Decode(&b)
+	bytes, err := io.ReadAll(resp)
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal(bytes, &b)
+	if err != nil {
+		return TBody{"result": string(bytes)}, nil
+	}
+	return b, nil
 }
 
 func NewLLMBalancer(target *url.URL, stream *url.URL) *llmbalancer {
@@ -46,34 +54,37 @@ func (l *llmbalancer) updateTimeout() {
 	}
 	l.timeout = time.AfterFunc(time.Minute*time.Duration(l.timeoutMins), func() {
 		log.Printf("Timed out, unloading the model")
-		l.post("/api/v1/model", TBody{"action": "unload"})
+		l.post("/v1/internal/model/load", TBody{"model_name": ""})
 	})
 }
 
 func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 	buf := bytes.Buffer{}
 	json.NewEncoder(&buf).Encode(body)
-	log.Printf("POST params: %s", buf.String())
+	log.Printf("POST URL: %s params: %s", path, buf.String())
 	resp, err := l.client.Post(l.target.JoinPath(path).String(), "application/json", &buf)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("error code %d", resp.StatusCode)
 	}
 	return parseBody(resp.Body)
 }
 
 func (l *llmbalancer) ensureLoaded() error {
 	l.updateTimeout()
-	_, err := l.post("/api/v1/token-count", TBody{"prompt": "ping"})
-	if err != nil && err.Error() == "EOF" {
+	_, err := l.post("/v1/internal/token-count", TBody{"text": "ping"})
+	if err != nil {
 		log.Print("Model unloaded, reloading...")
-		resp, err := l.post("/api/v1/model", TBody{"action": "load", "model_name": l.modelName, "args": l.args})
+		resp, err := l.post("/v1/internal/model/load", TBody{"model_name": l.modelName, "args": l.args})
 		if err != nil {
+			log.Printf("Error loading model: %s", err)
 			return err
 		}
 		if err, ok := resp["error"]; ok {
-			errmsg := err.(map[string]any)["message"]
 			log.Printf("Error loading model: %s", resp)
-			return fmt.Errorf("%s", errmsg)
+			return fmt.Errorf("%s", err)
 		} else {
 			log.Print("Model loaded")
 		}
@@ -85,18 +96,27 @@ func (l *llmbalancer) NextTarget(c echo.Context) (*middleware.ProxyTarget, error
 	log.Printf("Req: %s %s", c.Request().Method, c.Request().URL.String())
 	path := c.Request().URL.Path
 	method := c.Request().Method
-	if method == "GET" && path == "/api/v1/stream" {
-		l.ensureLoaded()
-		if l.stream != nil && l.stream.Host != "" {
-			return &middleware.ProxyTarget{URL: l.stream}, nil
-		}
-	}
-	if method == "POST" && path == "/api/v1/generate" {
+	if method == "POST" && (path == "/v1/chat/completions" || path == "/v1/completions") {
 		l.ensureLoaded()
 	}
 	return l.ProxyBalancer.Next(c), nil
 }
 
 func (l *llmbalancer) handleModel(c echo.Context) error {
-	return c.JSON(200, TBody{"result": l.modelName})
+	return c.JSON(200, TBody{"model_name": l.modelName})
+}
+
+func (l *llmbalancer) handleModels(c echo.Context) error {
+	return c.JSON(200, TBody{
+		"object": "list",
+		"data": []map[string]any{{
+			"id":       l.modelName,
+			"object":   "model",
+			"created":  0,
+			"owned_by": "user",
+		}}})
+}
+
+func (l *llmbalancer) forbidden(c echo.Context) error {
+	return JSONErrorMessage(c, 403, "forbidden")
 }
