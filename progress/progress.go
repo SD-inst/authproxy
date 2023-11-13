@@ -80,14 +80,14 @@ func (p *progress) updater() {
 		var sdp sdprogress
 		json.NewDecoder(resp.Body).Decode(&sdp)
 		if lastID != sdp.State.Job {
-			if sdp.State.Job != "" {
-				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
-			}
 			if lastID != "" {
 				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
 			}
+			if sdp.State.Job != "" {
+				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
+				jobStart = time.Now()
+			}
 			lastID = sdp.State.Job
-			jobStart = time.Now()
 		}
 		if lastProgress != sdp.Progress {
 			p.b.Broadcast(events.Packet{
