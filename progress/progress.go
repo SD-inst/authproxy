@@ -121,7 +121,7 @@ func (p *progress) updater() {
 }
 
 func (p *progress) gpuStatus() {
-	cmd := exec.Command("nvidia-smi", "--query-gpu", "memory.used,memory.free,memory.total", "--format", "csv,noheader,nounits", "-l")
+	cmd := exec.Command("nvidia-smi", "--query-gpu", "memory.used,memory.free,memory.total,power.draw", "--format", "csv,noheader,nounits", "-l", "1")
 	output, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Printf("Error getting stdout of nvidia-smi: %s", err)
@@ -138,9 +138,11 @@ func (p *progress) gpuStatus() {
 		used, _ := strconv.ParseUint(split[0], 10, 64)
 		free, _ := strconv.ParseUint(split[1], 10, 64)
 		total, _ := strconv.ParseUint(split[2], 10, 64)
+		watts, _ := strconv.ParseFloat(split[3], 64)
 		p.b.Broadcast(events.Packet{Type: events.GPU_UPDATE, Data: GPUUpdate{Free: free, Used: used, Total: total}})
 		p.m <- metrics.MetricUpdate{Type: metrics.GPU_FREE_MEMORY, Value: float64(free)}
 		p.m <- metrics.MetricUpdate{Type: metrics.GPU_USED_MEMORY, Value: float64(used)}
+		p.m <- metrics.MetricUpdate{Type: metrics.GPU_JOULES_SPENT, Value: float64(watts)}
 	}
 	cmd.Wait()
 }

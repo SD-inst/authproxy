@@ -12,6 +12,7 @@ type Metrics struct {
 	queueLength    prometheus.Gauge
 	gpuFreeMemory  prometheus.Gauge
 	gpuUsedMemory  prometheus.Gauge
+	gpuJoulesSpent prometheus.Counter
 	uploadCount    prometheus.Counter
 	uploadSize     prometheus.Counter
 	updater        chan MetricUpdate
@@ -25,6 +26,7 @@ const (
 	QUEUE_LENGTH
 	GPU_FREE_MEMORY
 	GPU_USED_MEMORY
+	GPU_JOULES_SPENT
 	UPLOAD_COUNT
 	UPLOAD_SIZE
 )
@@ -47,6 +49,8 @@ func (m *Metrics) start() {
 			m.gpuFreeMemory.Set(u.Value)
 		case GPU_USED_MEMORY:
 			m.gpuUsedMemory.Set(u.Value)
+		case GPU_JOULES_SPENT:
+			m.gpuJoulesSpent.Add(u.Value)
 		case UPLOAD_COUNT:
 			m.uploadCount.Add(u.Value)
 		case UPLOAD_SIZE:
@@ -63,6 +67,7 @@ func NewMetrics(e *echo.Echo) chan<- MetricUpdate {
 		queueLength:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "queue_length", Help: "Number of tasks queued for processing"}),
 		gpuFreeMemory:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpu_free_memory", Help: "Amount of free VRAM"}),
 		gpuUsedMemory:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpu_used_memory", Help: "Amount of occupied VRAM"}),
+		gpuJoulesSpent: prometheus.NewCounter(prometheus.CounterOpts{Name: "gpu_joules_spent", Help: "Amount of joules converted to warm the air"}),
 		uploadCount:    prometheus.NewCounter(prometheus.CounterOpts{Name: "upload_count", Help: "Number of LoRAs uploaded"}),
 		uploadSize:     prometheus.NewCounter(prometheus.CounterOpts{Name: "upload_size", Help: "Total size of LoRAs uploaded"}),
 		updater:        make(chan MetricUpdate, 100)}
@@ -71,6 +76,7 @@ func NewMetrics(e *echo.Echo) chan<- MetricUpdate {
 	reg.MustRegister(m.queueLength)
 	reg.MustRegister(m.gpuFreeMemory)
 	reg.MustRegister(m.gpuUsedMemory)
+	reg.MustRegister(m.gpuJoulesSpent)
 	reg.MustRegister(m.uploadCount)
 	reg.MustRegister(m.uploadSize)
 	h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg})
