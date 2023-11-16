@@ -1,27 +1,24 @@
 package metrics
 
 import (
+	"fmt"
+	"log"
+
 	"github.com/labstack/echo/v4"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Metrics struct {
-	tasksCompleted prometheus.Counter
-	gpuActiveTime  prometheus.Counter
-	queueLength    prometheus.Gauge
-	gpuFreeMemory  prometheus.Gauge
-	gpuUsedMemory  prometheus.Gauge
-	gpuJoulesSpent prometheus.Counter
-	uploadCount    prometheus.Counter
-	uploadSize     prometheus.Counter
-	updater        chan MetricUpdate
+	reg     prometheus.Registerer
+	metrics map[MetricID]prometheus.Metric
+	updater chan MetricUpdate
 }
 
-type MetricType int
+type MetricID int
 
 const (
-	TASKS_COMPLETED MetricType = iota
+	TASKS_COMPLETED MetricID = iota
 	GPU_ACTIVE_TIME
 	QUEUE_LENGTH
 	GPU_FREE_MEMORY
@@ -32,54 +29,51 @@ const (
 )
 
 type MetricUpdate struct {
-	Type  MetricType
+	Type  MetricID
 	Value float64
 }
 
 func (m *Metrics) start() {
 	for u := range m.updater {
-		switch u.Type {
-		case TASKS_COMPLETED:
-			m.tasksCompleted.Add(u.Value)
-		case GPU_ACTIVE_TIME:
-			m.gpuActiveTime.Add(u.Value)
-		case QUEUE_LENGTH:
-			m.queueLength.Set(u.Value)
-		case GPU_FREE_MEMORY:
-			m.gpuFreeMemory.Set(u.Value)
-		case GPU_USED_MEMORY:
-			m.gpuUsedMemory.Set(u.Value)
-		case GPU_JOULES_SPENT:
-			m.gpuJoulesSpent.Add(u.Value)
-		case UPLOAD_COUNT:
-			m.uploadCount.Add(u.Value)
-		case UPLOAD_SIZE:
-			m.uploadSize.Add(u.Value)
+		if metric, ok := m.metrics[u.Type]; ok {
+			switch t := metric.(type) {
+			case prometheus.Gauge:
+				t.Set(u.Value)
+			case prometheus.Counter:
+				t.Add(u.Value)
+			}
+		} else {
+			log.Printf("Unknown metric of type %v", u.Type)
 		}
 	}
 }
 
+func (m *Metrics) register(id MetricID, t prometheus.ValueType, name string, help string) {
+	var newMetric prometheus.Metric
+	switch t {
+	case prometheus.CounterValue:
+		newMetric = prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: help})
+	case prometheus.GaugeValue:
+		newMetric = prometheus.NewGauge(prometheus.GaugeOpts{Name: name, Help: help})
+	default:
+		panic(fmt.Sprintf("Unknown metric value type: %d", t))
+	}
+	m.metrics[id] = newMetric
+	m.reg.MustRegister(newMetric.(prometheus.Collector))
+}
+
 func NewMetrics(e *echo.Echo) chan<- MetricUpdate {
-	reg := prometheus.NewRegistry()
-	m := Metrics{
-		tasksCompleted: prometheus.NewCounter(prometheus.CounterOpts{Name: "tasks_completed", Help: "Number of tasks processed"}),
-		gpuActiveTime:  prometheus.NewCounter(prometheus.CounterOpts{Name: "gpu_active_time", Help: "Number of seconds the GPU was spinning"}),
-		queueLength:    prometheus.NewGauge(prometheus.GaugeOpts{Name: "queue_length", Help: "Number of tasks queued for processing"}),
-		gpuFreeMemory:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpu_free_memory", Help: "Amount of free VRAM"}),
-		gpuUsedMemory:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "gpu_used_memory", Help: "Amount of occupied VRAM"}),
-		gpuJoulesSpent: prometheus.NewCounter(prometheus.CounterOpts{Name: "gpu_joules_spent", Help: "Amount of joules converted to warm the air"}),
-		uploadCount:    prometheus.NewCounter(prometheus.CounterOpts{Name: "upload_count", Help: "Number of LoRAs uploaded"}),
-		uploadSize:     prometheus.NewCounter(prometheus.CounterOpts{Name: "upload_size", Help: "Total size of LoRAs uploaded"}),
-		updater:        make(chan MetricUpdate, 100)}
-	reg.MustRegister(m.tasksCompleted)
-	reg.MustRegister(m.gpuActiveTime)
-	reg.MustRegister(m.queueLength)
-	reg.MustRegister(m.gpuFreeMemory)
-	reg.MustRegister(m.gpuUsedMemory)
-	reg.MustRegister(m.gpuJoulesSpent)
-	reg.MustRegister(m.uploadCount)
-	reg.MustRegister(m.uploadSize)
-	h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg})
+	m := Metrics{reg: prometheus.NewRegistry(), metrics: map[MetricID]prometheus.Metric{}, updater: make(chan MetricUpdate, 100)}
+	m.register(TASKS_COMPLETED, prometheus.CounterValue, "tasks_completed", "Number of tasks processed")
+	m.register(GPU_ACTIVE_TIME, prometheus.CounterValue, "gpu_active_time", "Number of seconds the GPU was spinning")
+	m.register(QUEUE_LENGTH, prometheus.GaugeValue, "queue_length", "Number of tasks queued for processing")
+	m.register(GPU_FREE_MEMORY, prometheus.GaugeValue, "gpu_free_memory", "Amount of free VRAM")
+	m.register(GPU_USED_MEMORY, prometheus.GaugeValue, "gpu_used_memory", "Amount of occupied VRAM")
+	m.register(GPU_JOULES_SPENT, prometheus.CounterValue, "gpu_joules_spent", "Amount of joules converted to warm the air")
+	m.register(UPLOAD_COUNT, prometheus.CounterValue, "upload_count", "Number of LoRAs uploaded")
+	m.register(UPLOAD_SIZE, prometheus.CounterValue, "upload_size", "Total size of LoRAs uploaded")
+
+	h := promhttp.HandlerFor(m.reg.(prometheus.Gatherer), promhttp.HandlerOpts{Registry: m.reg})
 	e.GET("/metrics", func(c echo.Context) error {
 		h.ServeHTTP(c.Response(), c.Request())
 		return nil
