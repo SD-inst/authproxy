@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -21,6 +22,7 @@ type llmbalancer struct {
 	client      http.Client
 	timeoutMins int
 	modelName   string
+	loraNames   []string
 	args        any
 	timeout     *time.Timer
 }
@@ -54,7 +56,7 @@ func (l *llmbalancer) updateTimeout() {
 	}
 	l.timeout = time.AfterFunc(time.Minute*time.Duration(l.timeoutMins), func() {
 		log.Printf("Timed out, unloading the model")
-		l.post("/v1/internal/model/load", TBody{"model_name": ""})
+		l.post("/v1/internal/model/unload", TBody{})
 	})
 }
 
@@ -75,19 +77,28 @@ func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 func (l *llmbalancer) ensureLoaded() error {
 	l.updateTimeout()
 	_, err := l.post("/v1/internal/token-count", TBody{"text": "ping"})
+	if err == nil {
+		return nil
+	}
+	log.Print("Model unloaded, reloading...")
+	resp, err := l.post("/v1/internal/model/load", TBody{"model_name": l.modelName, "args": l.args})
 	if err != nil {
-		log.Print("Model unloaded, reloading...")
-		resp, err := l.post("/v1/internal/model/load", TBody{"model_name": l.modelName, "args": l.args})
-		if err != nil {
-			log.Printf("Error loading model: %s", err)
-			return err
-		}
-		if err, ok := resp["error"]; ok {
-			log.Printf("Error loading model: %s", resp)
-			return fmt.Errorf("%s", err)
-		} else {
-			log.Print("Model loaded")
-		}
+		log.Printf("Error loading model: %s", err)
+		return err
+	}
+	if err, ok := resp["error"]; ok {
+		log.Printf("Error loading model: %s", resp)
+		return fmt.Errorf("%s", err)
+	}
+	log.Print("Model loaded")
+	resp, err = l.post("/v1/internal/lora/load", TBody{"lora_names": l.loraNames})
+	if err != nil {
+		log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), err)
+		return err
+	}
+	if err, ok := resp["error"]; ok {
+		log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), resp)
+		return fmt.Errorf("%s", err)
 	}
 	return nil
 }

@@ -20,20 +20,21 @@ import (
 )
 
 var params struct {
-	CredFilename string `short:"f" description:"Credentials filename" required:"true"`
-	AddUser      bool   `short:"a" description:"Add new user"`
-	Username     string `short:"u" description:"Username for -a"`
-	Password     string `short:"p" description:"Password for -a"`
-	TargetURL    string `short:"t" description:"Target URL to proxy to"`
-	LLMURL       string `long:"llm-url" description:"Target LLM URL to proxy to"`
-	LLMStreamURL string `long:"llm-stream-url" description:"Target LLM stream (websocket) URL to proxy to"`
-	Address      string `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
-	LLMTimeout   int    `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
-	LLMModel     string `long:"llm-model" description:"LLM model to autoload"`
-	LLMArgs      string `long:"llm-args" description:"JSON-formatted parameters to load the model and loras"`
-	LoRAPath     string `long:"lora-path" description:"Path to the directory for LoRA uploads"`
-	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
-	FIFOPath     string `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
+	CredFilename string   `short:"f" description:"Credentials filename" required:"true"`
+	AddUser      bool     `short:"a" description:"Add new user"`
+	Username     string   `short:"u" description:"Username for -a"`
+	Password     string   `short:"p" description:"Password for -a"`
+	TargetURL    string   `short:"t" description:"Target URL to proxy to"`
+	LLMURL       string   `long:"llm-url" description:"Target LLM URL to proxy to"`
+	LLMStreamURL string   `long:"llm-stream-url" description:"Target LLM stream (websocket) URL to proxy to"`
+	Address      string   `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
+	LLMTimeout   int      `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
+	LLMModel     string   `long:"llm-model" description:"LLM model to autoload"`
+	LLMArgs      string   `long:"llm-args" description:"JSON-formatted parameters to load the model"`
+	LLMLoras     []string `long:"llm-lora" description:"LLM loras to autoload"`
+	LoRAPath     string   `long:"lora-path" description:"Path to the directory for LoRA uploads"`
+	SDHost       string   `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
+	FIFOPath     string   `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string
 	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
 }
@@ -109,6 +110,7 @@ func main() {
 		llm := NewLLMBalancer(llmurl, llmstreamurl)
 		llm.timeoutMins = params.LLMTimeout
 		llm.modelName = params.LLMModel
+		llm.loraNames = params.LLMLoras
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
 		llm.updateTimeout()
 		e.Group("/v1/*", middleware.ProxyWithConfig(middleware.ProxyConfig{
