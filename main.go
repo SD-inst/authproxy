@@ -58,7 +58,7 @@ func main() {
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 			params.JWTSecret = randomString(r, 64)
 		}
-		creds[params.Username] = string(hashed)
+		creds[strings.ToLower(params.Username)] = string(hashed)
 		saveCreds(params.CredFilename)
 		log.Printf("User %s added", params.Username)
 		return
