@@ -29,7 +29,7 @@ type ProgressUpdate struct {
 	Queued       int       `json:"queued"`
 	Current      int       `json:"current"`
 	Progress     float64   `json:"progress"`
-	ETA          int       `json:"eta"`
+	ETA          string    `json:"eta"`
 	Description  string    `json:"description"`
 	LastActive   time.Time `json:"last_active"`
 	TaskDuration string    `json:"duration"`
@@ -46,11 +46,11 @@ type sdprogress struct {
 	EtaRelative float64 `json:"eta_relative"`
 	QueueSize   int     `json:"queue_size"`
 	State       struct {
-		JobTimestamp  string `json:"job_timestamp"`
-		Job           string `json:"job"`
-		JobCount      int    `json:"job_count"`
-		SamplingSteps int    `json:"sampling_steps"`
-		SamplingStep  int    `json:"sampling_step"`
+		JobTimestamp  string  `json:"job_timestamp"`
+		Job           *string `json:"job"`
+		JobCount      int     `json:"job_count"`
+		SamplingSteps int     `json:"sampling_steps"`
+		SamplingStep  int     `json:"sampling_step"`
 	}
 }
 
@@ -79,15 +79,18 @@ func (p *progress) updater() {
 		}
 		var sdp sdprogress
 		json.NewDecoder(resp.Body).Decode(&sdp)
-		if lastID != sdp.State.Job {
+		if sdp.State.Job == nil {
+			continue
+		}
+		if lastID != *sdp.State.Job {
 			if lastID != "" {
 				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
 			}
-			if sdp.State.Job != "" {
+			if *sdp.State.Job != "" {
 				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
 				jobStart = time.Now()
 			}
-			lastID = sdp.State.Job
+			lastID = *sdp.State.Job
 		}
 		if lastProgress != sdp.Progress {
 			p.b.Broadcast(events.Packet{
@@ -96,7 +99,7 @@ func (p *progress) updater() {
 					Current:      sdp.State.JobCount,
 					Queued:       sdp.QueueSize,
 					Progress:     sdp.Progress,
-					ETA:          int(sdp.EtaRelative),
+					ETA:          time.Duration(sdp.EtaRelative * float64(time.Second)).Truncate(time.Second).String(),
 					Description:  fmt.Sprintf("%s %d/%d steps", "rendering", sdp.State.SamplingStep, sdp.State.SamplingSteps),
 					LastActive:   time.Now(),
 					TaskDuration: time.Since(jobStart).Truncate(time.Second).String(),

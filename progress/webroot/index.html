@@ -48,7 +48,7 @@
                                     (data.progress * 100).toFixed(2) + '%'
                                 );
                             document.getElementById('eta').innerText =
-                                data.eta + ' sec';
+                                data.eta;
                             document.getElementById('description').innerText =
                                 data.description;
                             const lastActive = new Date(data.last_active);
@@ -58,7 +58,7 @@
                             if (data.progress > 0) {
                                 document.title = `[${Math.floor(
                                     data.progress * 100
-                                )}% ETA: ${data.eta}s] SD queue monitor`;
+                                )}% ETA: ${data.eta}] SD queue monitor`;
                             } else {
                                 document.title = 'SD queue monitor';
                             }
