@@ -34,6 +34,7 @@ var params struct {
 	LLMLoras     []string `long:"llm-lora" description:"LLM loras to autoload"`
 	LoRAPath     string   `long:"lora-path" description:"Path to the directory for LoRA uploads"`
 	SDHost       string   `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
+	SDTimeout    int      `long:"sd-timeout" description:"SD task timeout in seconds" default:"300"`
 	FIFOPath     string   `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string
 	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
@@ -84,7 +85,7 @@ func main() {
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
-	pr := progress.NewProgress(broker, params.SDHost, params.FIFOPath, mchan)
+	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, params.FIFOPath, mchan)
 	pr.AddHandlers(e.Group("/q"))
 	pr.Start()
 	tgturl, err := url.Parse(params.TargetURL)

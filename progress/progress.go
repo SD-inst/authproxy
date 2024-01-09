@@ -23,8 +23,6 @@ import (
 //go:embed webroot
 var webroot embed.FS
 
-const maxTaskDuration = time.Minute * 5
-
 type ProgressUpdate struct {
 	Queued       int       `json:"queued"`
 	Current      int       `json:"current"`
@@ -58,11 +56,12 @@ type progress struct {
 	b        *events.Broker
 	sdhost   string
 	fifoPath string
+	timeout  time.Duration
 	m        chan<- metrics.MetricUpdate
 }
 
-func NewProgress(broker *events.Broker, sdhost string, fifoPath string, m chan<- metrics.MetricUpdate) *progress {
-	return &progress{b: broker, sdhost: sdhost, fifoPath: fifoPath, m: m}
+func NewProgress(broker *events.Broker, sdhost string, timeout int, fifoPath string, m chan<- metrics.MetricUpdate) *progress {
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), fifoPath: fifoPath, m: m}
 }
 
 func (p *progress) updater() {
@@ -107,8 +106,8 @@ func (p *progress) updater() {
 			lastProgress = sdp.Progress
 			p.m <- metrics.MetricUpdate{Type: metrics.QUEUE_LENGTH, Value: float64(sdp.QueueSize)}
 		}
-		if p.fifoPath != "" && time.Since(jobStart) > maxTaskDuration && sdp.Progress > 0 {
-			log.Printf("Task execution time exceeded %s, restarting", maxTaskDuration.String())
+		if p.fifoPath != "" && time.Since(jobStart) > p.timeout && sdp.Progress > 0 {
+			log.Printf("Task execution time exceeded %s, restarting", p.timeout.String())
 			go func() {
 				f, err := os.OpenFile(p.fifoPath, os.O_WRONLY, 0666)
 				if err != nil {
