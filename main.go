@@ -113,7 +113,6 @@ func main() {
 		llm.modelName = params.LLMModel
 		llm.loraNames = params.LLMLoras
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
-		llm.updateTimeout()
 		e.Group("/v1/*", middleware.ProxyWithConfig(middleware.ProxyConfig{
 			Balancer: llm,
 		}))

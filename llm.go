@@ -75,7 +75,6 @@ func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 }
 
 func (l *llmbalancer) ensureLoaded() error {
-	l.updateTimeout()
 	_, err := l.post("/v1/internal/token-count", TBody{"text": "ping"})
 	if err == nil {
 		return nil
@@ -100,6 +99,7 @@ func (l *llmbalancer) ensureLoaded() error {
 		log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), resp)
 		return fmt.Errorf("%s", err)
 	}
+	l.updateTimeout()
 	return nil
 }
 
