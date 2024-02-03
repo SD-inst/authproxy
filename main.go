@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/go-flags"
+	"github.com/golang-jwt/jwt/v5"
 	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -79,6 +80,26 @@ func main() {
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
 			return c.Path() == "/login" || c.Path() == "/metrics" || strings.HasPrefix(c.Path(), "/v1/")
+		},
+	}))
+	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		LogRemoteIP:     true,
+		LogURI:          true,
+		LogMethod:       true,
+		LogStatus:       true,
+		LogUserAgent:    true,
+		LogResponseSize: true,
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			token := c.Get("user")
+			user := "???"
+			if token != nil {
+				subject, err := token.(*jwt.Token).Claims.GetSubject()
+				if err == nil && subject != "" {
+					user = subject
+				}
+			}
+			log.Printf("%s %s %s %s %d %d %s", v.RemoteIP, user, v.Method, v.URI, v.Status, v.ResponseSize, v.UserAgent)
+			return nil
 		},
 	}))
 	e.GET("/login", loginPageHandler)
