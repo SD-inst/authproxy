@@ -90,14 +90,16 @@ func (l *llmbalancer) ensureLoaded() error {
 		return fmt.Errorf("%s", err)
 	}
 	log.Print("Model loaded")
-	resp, err = l.post("/v1/internal/lora/load", TBody{"lora_names": l.loraNames})
-	if err != nil {
-		log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), err)
-		return err
-	}
-	if err, ok := resp["error"]; ok {
-		log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), resp)
-		return fmt.Errorf("%s", err)
+	if len(l.loraNames) > 0 {
+		resp, err = l.post("/v1/internal/lora/load", TBody{"lora_names": l.loraNames})
+		if err != nil {
+			log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), err)
+			return err
+		}
+		if err, ok := resp["error"]; ok {
+			log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), resp)
+			return fmt.Errorf("%s", err)
+		}
 	}
 	l.updateTimeout()
 	return nil
