@@ -160,7 +160,11 @@ async function uploadFile() {
                     document.body.removeChild(loading);
                     load();
                     if (req.status !== 200 && req.status !== 0) {
-                        alert('Error: ' + JSON.parse(req.response).message);
+                        try {
+                            alert('Error: ' + JSON.parse(req.response).message);
+                        } catch {
+                            alert('Error: ' + req.statusText);
+                        }
                     }
                 }
             });
