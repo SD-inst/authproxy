@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -25,6 +26,8 @@ type llmbalancer struct {
 	loraNames   []string
 	args        any
 	timeout     *time.Timer
+	m           sync.Mutex
+	loadedByUs  bool
 }
 
 type TBody map[string]any
@@ -55,8 +58,11 @@ func (l *llmbalancer) updateTimeout() {
 		l.timeout.Stop()
 	}
 	l.timeout = time.AfterFunc(time.Minute*time.Duration(l.timeoutMins), func() {
+		l.m.Lock()
 		log.Printf("Timed out, unloading the model")
 		l.post("/v1/internal/model/unload", TBody{})
+		l.loadedByUs = false
+		l.m.Unlock()
 	})
 }
 
@@ -75,9 +81,13 @@ func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 }
 
 func (l *llmbalancer) ensureLoaded() error {
+	l.m.Lock()
+	defer l.m.Unlock()
 	_, err := l.post("/v1/internal/token-count", TBody{"text": "ping"})
 	if err == nil {
-		l.updateTimeout()
+		if l.loadedByUs {
+			l.updateTimeout()
+		}
 		return nil
 	}
 	log.Print("Model unloaded, reloading...")
@@ -103,6 +113,7 @@ func (l *llmbalancer) ensureLoaded() error {
 		}
 	}
 	l.updateTimeout()
+	l.loadedByUs = true
 	return nil
 }
 
