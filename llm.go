@@ -77,6 +77,7 @@ func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 func (l *llmbalancer) ensureLoaded() error {
 	_, err := l.post("/v1/internal/token-count", TBody{"text": "ping"})
 	if err == nil {
+		l.updateTimeout()
 		return nil
 	}
 	log.Print("Model unloaded, reloading...")
