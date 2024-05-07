@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -19,15 +18,25 @@ import (
 type llmbalancer struct {
 	middleware.ProxyBalancer
 	target      *url.URL
-	stream      *url.URL
 	client      http.Client
 	timeoutMins int
 	modelName   string
 	loraNames   []string
 	args        any
-	timeout     *time.Timer
-	m           sync.Mutex
-	loadedByUs  bool
+	sq          *serviceQueue
+	proxy       echo.MiddlewareFunc
+}
+
+type bodyWrapper struct {
+	io.ReadCloser
+	onClose func()
+}
+
+func (b bodyWrapper) Close() error {
+	if b.onClose != nil {
+		b.onClose()
+	}
+	return b.ReadCloser.Close()
 }
 
 type TBody map[string]any
@@ -45,25 +54,35 @@ func parseBody(resp io.ReadCloser) (TBody, error) {
 	return b, nil
 }
 
-func NewLLMBalancer(target *url.URL, stream *url.URL) *llmbalancer {
+func NewLLMBalancer(target *url.URL, sq *serviceQueue) *llmbalancer {
 	var result llmbalancer
 	result.ProxyBalancer = middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{{URL: target}})
+	result.sq = sq
 	result.target = target
-	result.stream = stream
+	result.proxy = middleware.ProxyWithConfig(middleware.ProxyConfig{
+		Balancer: &result,
+		ModifyResponse: func(r *http.Response) error {
+			path := r.Request.URL.Path
+			if path == "/v1/chat/completions" || path == "/v1/completions" {
+				r.Body = bodyWrapper{ReadCloser: r.Body, onClose: func() {
+					sq.Lock()
+					sq.cancelCleanup()
+					sq.setService(NONE)
+					sq.Unlock()
+				}}
+				sq.Lock()
+				sq.setCleanup(time.Second * 5)
+				sq.Unlock()
+			}
+			return nil
+		},
+	})
 	return &result
 }
 
-func (l *llmbalancer) updateTimeout() {
-	if l.timeout != nil {
-		l.timeout.Stop()
-	}
-	l.timeout = time.AfterFunc(time.Minute*time.Duration(l.timeoutMins), func() {
-		l.m.Lock()
-		log.Printf("Timed out, unloading the model")
-		l.post("/v1/internal/model/unload", TBody{})
-		l.loadedByUs = false
-		l.m.Unlock()
-	})
+func (l *llmbalancer) unload() {
+	log.Printf("Unloading the model")
+	l.post("/v1/internal/model/unload", TBody{})
 }
 
 func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
@@ -81,13 +100,8 @@ func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 }
 
 func (l *llmbalancer) ensureLoaded() error {
-	l.m.Lock()
-	defer l.m.Unlock()
 	_, err := l.post("/v1/internal/token-count", TBody{"text": "ping"})
 	if err == nil {
-		if l.loadedByUs {
-			l.updateTimeout()
-		}
 		return nil
 	}
 	log.Print("Model unloaded, reloading...")
@@ -112,8 +126,6 @@ func (l *llmbalancer) ensureLoaded() error {
 			return fmt.Errorf("%s", err)
 		}
 	}
-	l.updateTimeout()
-	l.loadedByUs = true
 	return nil
 }
 
@@ -122,6 +134,9 @@ func (l *llmbalancer) NextTarget(c echo.Context) (*middleware.ProxyTarget, error
 	path := c.Request().URL.Path
 	method := c.Request().Method
 	if method == "POST" && (path == "/v1/chat/completions" || path == "/v1/completions") {
+		l.sq.Lock()
+		defer l.sq.Unlock()
+		l.sq.await(LLM)
 		l.ensureLoaded()
 	}
 	return l.ProxyBalancer.Next(c), nil

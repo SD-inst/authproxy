@@ -27,7 +27,6 @@ var params struct {
 	Password     string   `short:"p" description:"Password for -a"`
 	TargetURL    string   `short:"t" description:"Target URL to proxy to"`
 	LLMURL       string   `long:"llm-url" description:"Target LLM URL to proxy to"`
-	LLMStreamURL string   `long:"llm-stream-url" description:"Target LLM stream (websocket) URL to proxy to"`
 	Address      string   `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
 	LLMTimeout   int      `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
 	LLMModel     string   `long:"llm-model" description:"LLM model to autoload"`
@@ -113,10 +112,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	e.Group("/*", earlyCheckMiddleware(), middleware.Proxy(middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{
-		{URL: tgturl},
-	})))
-
+	sq := newServiceQueue()
+	sdp := newSDProxy(tgturl, sq)
+	e.Group("/*", earlyCheckMiddleware(), sdp.proxy)
 	llmurl, err := url.Parse(params.LLMURL)
 	if err != nil {
 		log.Fatal(err)
@@ -125,18 +123,13 @@ func main() {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
 		}
-		llmstreamurl, err := url.Parse(params.LLMStreamURL)
-		if err != nil {
-			log.Fatal(err)
-		}
-		llm := NewLLMBalancer(llmurl, llmstreamurl)
+		llm := NewLLMBalancer(llmurl, sq)
 		llm.timeoutMins = params.LLMTimeout
 		llm.modelName = params.LLMModel
 		llm.loraNames = params.LLMLoras
+		sdp.llm = llm
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
-		e.Group("/v1/*", middleware.ProxyWithConfig(middleware.ProxyConfig{
-			Balancer: llm,
-		}))
+		e.Group("/v1/*", llm.proxy)
 		e.GET("/v1/internal/model/info", llm.handleModel)
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models", llm.handleModels)
