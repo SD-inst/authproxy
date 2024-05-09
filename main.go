@@ -131,6 +131,7 @@ func main() {
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
 		e.Group("/v1/*", llm.proxy)
 		e.GET("/v1/internal/model/info", llm.handleModel)
+		e.POST("/v1/internal/encode", nil, llm.proxy)
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models", llm.handleModels)
 		e.GET("/v1/models/*", llm.forbidden)
