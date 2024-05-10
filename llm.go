@@ -54,6 +54,11 @@ func parseBody(resp io.ReadCloser) (TBody, error) {
 	return b, nil
 }
 
+func (l *llmbalancer) unload() {
+	log.Printf("Unloading the model")
+	l.post("/v1/internal/model/unload", TBody{})
+}
+
 func NewLLMBalancer(target *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) *llmbalancer {
 	result := llmbalancer{sq: sq, target: target}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
@@ -67,7 +72,7 @@ func NewLLMBalancer(target *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) *l
 				sq.await(LLM)
 				sq.cf = &cleanupFunc{
 					f: func() {
-						wd.Send("restart text-generation-webui")
+						result.unload()
 					},
 					service: LLM,
 				}

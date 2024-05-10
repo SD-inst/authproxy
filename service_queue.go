@@ -43,6 +43,7 @@ func (sq *serviceQueue) await(t svcType) bool {
 	}
 	if sq.service == t {
 		log.Printf("*** Service is already %v, proceeding ***", t)
+		sq.cancelCleanup()
 		return false
 	}
 	log.Printf("*** Service is %v, changing ***", sq.service)
@@ -77,24 +78,31 @@ func (sq *serviceQueue) setService(s svcType) {
 	sq.cv.Broadcast()
 }
 
-func (sq *serviceQueue) serviceCloser(t svcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(r *http.Response) error {
-	return func(r *http.Response) error {
-		path := r.Request.URL.Path
-		if pathChecker(path) {
-			sq.Lock()
-			sq.await(t)
-			if closeOnBody {
-				r.Body = bodyWrapper{ReadCloser: r.Body, onClose: func() {
+func (sq *serviceQueue) serviceCloser(t svcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {
+	return func(req *http.Request, resp *http.Response) error {
+		path := req.URL.Path
+		if !pathChecker(path) {
+			return nil
+		}
+		log.Printf("*** Setting closer for %s, %s ***", path, timeout)
+		sq.Lock()
+		sq.await(t)
+		log.Printf("*** Closer wait for %s is over ***", path)
+		if closeOnBody {
+			if resp != nil {
+				resp.Body = bodyWrapper{ReadCloser: resp.Body, onClose: func() {
 					log.Printf("*** Closing body ***")
 					sq.Lock()
 					sq.cancelCleanup()
 					sq.setService(NONE)
 					sq.Unlock()
 				}}
+			} else {
+				log.Printf("*** No response set ***")
 			}
-			sq.setCleanup(timeout)
-			sq.Unlock()
 		}
+		sq.setCleanup(timeout)
+		sq.Unlock()
 		return nil
 	}
 }

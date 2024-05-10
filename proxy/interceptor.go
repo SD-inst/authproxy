@@ -10,7 +10,7 @@ import (
 
 type Interceptor struct {
 	Before func(c echo.Context)
-	After  func(r *http.Response) error
+	After  func(req *http.Request, resp *http.Response) error
 }
 
 type proxyWrapper struct {
@@ -30,9 +30,15 @@ func NewProxyWrapper(targetURL *url.URL, i *Interceptor) echo.MiddlewareFunc {
 		Balancer: &proxyWrapper{ProxyBalancer: middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{
 			{URL: targetURL},
 		}), i: i},
+		ErrorHandler: func(c echo.Context, err error) error {
+			if i != nil && i.After != nil {
+				return i.After(c.Request(), nil)
+			}
+			return nil
+		},
 		ModifyResponse: func(r *http.Response) error {
 			if i != nil && i.After != nil {
-				return i.After(r)
+				return i.After(r.Request, r)
 			}
 			return nil
 		},

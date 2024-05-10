@@ -20,7 +20,7 @@ func newSDProxy(target *url.URL, sq *serviceQueue) (result echo.MiddlewareFunc) 
 		},
 		After: sq.serviceCloser(SD, func(path string) bool {
 			return path == "/internal/progress"
-		}, time.Second*5, false),
+		}, time.Second*10, false),
 	})
 	return
 }
