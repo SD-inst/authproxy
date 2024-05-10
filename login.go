@@ -49,7 +49,8 @@ func loginPageHandler(c echo.Context) error {
 	return tpl.Execute(c.Response(), struct{ ReturnTo string }{ReturnTo: c.QueryParam("return")})
 }
 
-func failLogin(c echo.Context) error {
+func failLogin(c echo.Context, username string) error {
+	log.Printf("User \"%s\" failed to login", username)
 	return c.Redirect(302, "/login")
 }
 
@@ -69,14 +70,14 @@ func loginHandler(c echo.Context) error {
 	password := c.FormValue("password")
 	returnTo := c.FormValue("return")
 	if login == "" {
-		return failLogin(c)
+		return failLogin(c, "<missing username>")
 	}
 	passwordHashed, ok := creds[login]
 	if !ok {
-		return failLogin(c)
+		return failLogin(c, login)
 	}
 	if bcrypt.CompareHashAndPassword([]byte(passwordHashed), []byte(password)) != nil {
-		return failLogin(c)
+		return failLogin(c, login)
 	}
 	err := setToken(c, login)
 	if err != nil {

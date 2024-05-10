@@ -1,7 +1,9 @@
 package main
 
 import (
-	"net/http"
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/url"
 	"time"
 
@@ -16,12 +18,31 @@ type sdbalancer struct {
 	proxy echo.MiddlewareFunc
 }
 
+func isPredict(c echo.Context) bool {
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return false
+	}
+	c.Request().Body = io.NopCloser(bytes.NewBuffer(body))
+	p := map[string]any{}
+	err = json.Unmarshal(body, &p)
+	if err != nil {
+		return false
+	}
+	if data, ok := p["data"].([]any); ok {
+		return len(data) > 0
+	}
+	return false
+}
+
 func (sb *sdbalancer) Next(c echo.Context) *middleware.ProxyTarget {
 	if c.Request().URL.Path == "/run/predict" {
-		sb.sq.Lock()
-		defer sb.sq.Unlock()
-		if sb.sq.await(SD) && sb.llm != nil {
-			sb.llm.unload()
+		if isPredict(c) {
+			sb.sq.Lock()
+			defer sb.sq.Unlock()
+			if sb.sq.await(SD) && sb.llm != nil {
+				sb.llm.unload()
+			}
 		}
 	}
 	return sb.ProxyBalancer.Next(c)
@@ -36,14 +57,9 @@ func newSDProxy(target *url.URL, sq *serviceQueue) (result *sdbalancer) {
 	}
 	result.proxy = middleware.ProxyWithConfig(middleware.ProxyConfig{
 		Balancer: result,
-		ModifyResponse: func(r *http.Response) error {
-			if r.Request.URL.Path == "/internal/progress" {
-				sq.Lock()
-				sq.setCleanup(time.Second * 5)
-				sq.Unlock()
-			}
-			return nil
-		},
+		ModifyResponse: sq.serviceCloser(func(path string) bool {
+			return path == "/internal/progress"
+		}, time.Second*5, false),
 	})
 	return
 }

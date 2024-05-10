@@ -61,21 +61,9 @@ func NewLLMBalancer(target *url.URL, sq *serviceQueue) *llmbalancer {
 	result.target = target
 	result.proxy = middleware.ProxyWithConfig(middleware.ProxyConfig{
 		Balancer: &result,
-		ModifyResponse: func(r *http.Response) error {
-			path := r.Request.URL.Path
-			if path == "/v1/chat/completions" || path == "/v1/completions" {
-				r.Body = bodyWrapper{ReadCloser: r.Body, onClose: func() {
-					sq.Lock()
-					sq.cancelCleanup()
-					sq.setService(NONE)
-					sq.Unlock()
-				}}
-				sq.Lock()
-				sq.setCleanup(time.Second * 5)
-				sq.Unlock()
-			}
-			return nil
-		},
+		ModifyResponse: sq.serviceCloser(func(path string) bool {
+			return path == "/v1/chat/completions" || path == "/v1/completions"
+		}, time.Second*5, true),
 	})
 	return &result
 }

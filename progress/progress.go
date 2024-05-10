@@ -137,6 +137,10 @@ func (p *progress) gpuStatus() {
 	for s.Scan() {
 		line := s.Text()
 		split := strings.Split(line, ", ")
+		if len(split) < 4 {
+			log.Printf("GPU monitoring error, read line: %s", line)
+			return
+		}
 		used, _ := strconv.ParseUint(split[0], 10, 64)
 		free, _ := strconv.ParseUint(split[1], 10, 64)
 		total, _ := strconv.ParseUint(split[2], 10, 64)
