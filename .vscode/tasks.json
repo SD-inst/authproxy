@@ -7,8 +7,21 @@
             "label": "build",
             "type": "shell",
             "command": "go",
-            "args": ["build", "-ldflags", "-w -s"],
-            "options": { "env": { "CGO_ENABLED": "0" } }
+            "args": [
+                "build",
+                "-ldflags",
+                "-w -s"
+            ],
+            "options": {
+                "env": {
+                    "CGO_ENABLED": "0"
+                }
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
         }
     ]
 }

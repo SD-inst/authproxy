@@ -80,7 +80,8 @@ func main() {
 		ErrorHandler: keyErrorHandler,
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
-			return c.Path() == "/login" || c.Path() == "/metrics" || strings.HasPrefix(c.Path(), "/v1/")
+			path := c.Path()
+			return path == "/login" || path == "/metrics" || path == "/internal/join" || path == "/internal/leave" || strings.HasPrefix(path, "/v1/")
 		},
 	}))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
@@ -120,8 +121,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sdp := newSDProxy(tgturl, sq)
+	sdp := newSDProxy(tgturl)
 	e.Group("/*", earlyCheckMiddleware(), sdp)
+	e.POST("/internal/join", func(c echo.Context) error {
+		sq.Lock()
+		sq.await(SD)
+		sq.Unlock()
+		return nil
+	})
+	e.POST("/internal/leave", func(c echo.Context) error {
+		sq.Lock()
+		sq.await(SD)
+		sq.setCleanup(time.Second * 3)
+		sq.Unlock()
+		return nil
+	})
 	if llmurl.Scheme != "" {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
