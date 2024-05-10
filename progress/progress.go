@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/events"
 	"github.com/rkfg/authproxy/metrics"
+	"github.com/rkfg/authproxy/watchdog"
 )
 
 //go:embed webroot
@@ -53,15 +53,15 @@ type sdprogress struct {
 }
 
 type progress struct {
-	b        *events.Broker
-	sdhost   string
-	fifoPath string
-	timeout  time.Duration
-	m        chan<- metrics.MetricUpdate
+	b       *events.Broker
+	sdhost  string
+	wd      *watchdog.Watchdog
+	timeout time.Duration
+	m       chan<- metrics.MetricUpdate
 }
 
-func NewProgress(broker *events.Broker, sdhost string, timeout int, fifoPath string, m chan<- metrics.MetricUpdate) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), fifoPath: fifoPath, m: m}
+func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate) *progress {
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m}
 }
 
 func (p *progress) updater() {
@@ -106,18 +106,9 @@ func (p *progress) updater() {
 			lastProgress = sdp.Progress
 			p.m <- metrics.MetricUpdate{Type: metrics.QUEUE_LENGTH, Value: float64(sdp.QueueSize)}
 		}
-		if p.fifoPath != "" && time.Since(jobStart) > p.timeout && sdp.Progress > 0 {
+		if p.wd != nil && time.Since(jobStart) > p.timeout && sdp.Progress > 0 {
 			log.Printf("Task execution time exceeded %s, restarting", p.timeout.String())
-			go func() {
-				f, err := os.OpenFile(p.fifoPath, os.O_WRONLY, 0666)
-				if err != nil {
-					log.Printf("Error opening control FIFO: %s", err)
-					return
-				}
-				f.WriteString("restart")
-				f.Close()
-				log.Printf("Instance restarted")
-			}()
+			p.wd.Send("restart stablediff-cuda")
 		}
 	}
 }

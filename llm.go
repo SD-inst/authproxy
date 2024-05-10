@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/rkfg/authproxy/proxy"
+	"github.com/rkfg/authproxy/watchdog"
 )
 
 type llmbalancer struct {
-	middleware.ProxyBalancer
+	proxy       echo.MiddlewareFunc
 	target      *url.URL
 	client      http.Client
 	timeoutMins int
@@ -24,7 +25,6 @@ type llmbalancer struct {
 	loraNames   []string
 	args        any
 	sq          *serviceQueue
-	proxy       echo.MiddlewareFunc
 }
 
 type bodyWrapper struct {
@@ -54,14 +54,27 @@ func parseBody(resp io.ReadCloser) (TBody, error) {
 	return b, nil
 }
 
-func NewLLMBalancer(target *url.URL, sq *serviceQueue) *llmbalancer {
-	var result llmbalancer
-	result.ProxyBalancer = middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{{URL: target}})
-	result.sq = sq
-	result.target = target
-	result.proxy = middleware.ProxyWithConfig(middleware.ProxyConfig{
-		Balancer: &result,
-		ModifyResponse: sq.serviceCloser(func(path string) bool {
+func NewLLMBalancer(target *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) *llmbalancer {
+	result := llmbalancer{sq: sq, target: target}
+	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
+		Before: func(c echo.Context) {
+			log.Printf("Req: %s %s", c.Request().Method, c.Request().URL.String())
+			path := c.Request().URL.Path
+			method := c.Request().Method
+			if method == "POST" && (path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode") {
+				sq.Lock()
+				defer sq.Unlock()
+				sq.await(LLM)
+				sq.cf = &cleanupFunc{
+					f: func() {
+						wd.Send("restart text-generation-webui")
+					},
+					service: LLM,
+				}
+				result.ensureLoaded()
+			}
+		},
+		After: sq.serviceCloser(func(path string) bool {
 			return path == "/v1/chat/completions" || path == "/v1/completions"
 		}, time.Second*5, true),
 	})
@@ -115,19 +128,6 @@ func (l *llmbalancer) ensureLoaded() error {
 		}
 	}
 	return nil
-}
-
-func (l *llmbalancer) NextTarget(c echo.Context) (*middleware.ProxyTarget, error) {
-	log.Printf("Req: %s %s", c.Request().Method, c.Request().URL.String())
-	path := c.Request().URL.Path
-	method := c.Request().Method
-	if method == "POST" && (path == "/v1/chat/completions" || path == "/v1/completions") {
-		l.sq.Lock()
-		defer l.sq.Unlock()
-		l.sq.await(LLM)
-		l.ensureLoaded()
-	}
-	return l.ProxyBalancer.Next(c), nil
 }
 
 func (l *llmbalancer) handleModel(c echo.Context) error {

@@ -17,6 +17,7 @@ import (
 	"github.com/rkfg/authproxy/metrics"
 	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/upload"
+	"github.com/rkfg/authproxy/watchdog"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -27,6 +28,7 @@ var params struct {
 	Password     string   `short:"p" description:"Password for -a"`
 	TargetURL    string   `short:"t" description:"Target URL to proxy to"`
 	LLMURL       string   `long:"llm-url" description:"Target LLM URL to proxy to"`
+	TTSURL       string   `long:"tts-url" description:"TTS URL"`
 	Address      string   `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
 	LLMTimeout   int      `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
 	LLMModel     string   `long:"llm-model" description:"LLM model to autoload"`
@@ -105,7 +107,8 @@ func main() {
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
-	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, params.FIFOPath, mchan)
+	wd := watchdog.NewWatchdog(params.FIFOPath)
+	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan)
 	pr.AddHandlers(e.Group("/q"))
 	pr.Start()
 	tgturl, err := url.Parse(params.TargetURL)
@@ -113,21 +116,19 @@ func main() {
 		log.Fatal(err)
 	}
 	sq := newServiceQueue()
-	sdp := newSDProxy(tgturl, sq)
-	e.Group("/*", earlyCheckMiddleware(), sdp.proxy)
 	llmurl, err := url.Parse(params.LLMURL)
 	if err != nil {
 		log.Fatal(err)
 	}
+	var llm *llmbalancer = nil
 	if llmurl.Scheme != "" {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
 		}
-		llm := NewLLMBalancer(llmurl, sq)
+		llm = NewLLMBalancer(llmurl, sq, wd)
 		llm.timeoutMins = params.LLMTimeout
 		llm.modelName = params.LLMModel
 		llm.loraNames = params.LLMLoras
-		sdp.llm = llm
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
 		e.Group("/v1/*", llm.proxy)
 		e.GET("/v1/internal/model/info", llm.handleModel)
@@ -136,8 +137,17 @@ func main() {
 		e.GET("/v1/models", llm.handleModels)
 		e.GET("/v1/models/*", llm.forbidden)
 	}
+	sdp := newSDProxy(tgturl, sq)
+	e.Group("/*", earlyCheckMiddleware(), sdp)
 	if params.LoRAPath != "" {
 		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker, mchan)
+	}
+	if params.TTSURL != "" {
+		ttsurl, err := url.Parse(params.TTSURL)
+		if err != nil {
+			log.Fatalf("Error parsing TTS URL: %s", err)
+		}
+		e.Group("/tts/*", middleware.Rewrite(map[string]string{"/tts/*": "/$1"}), newTTSProxy(ttsurl, sq, wd))
 	}
 	e.Start(params.Address)
 }

@@ -8,15 +8,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
+	"github.com/rkfg/authproxy/proxy"
 )
-
-type sdbalancer struct {
-	middleware.ProxyBalancer
-	sq    *serviceQueue
-	llm   *llmbalancer
-	proxy echo.MiddlewareFunc
-}
 
 func isPredict(c echo.Context) bool {
 	body, err := io.ReadAll(c.Request().Body)
@@ -35,29 +28,19 @@ func isPredict(c echo.Context) bool {
 	return false
 }
 
-func (sb *sdbalancer) Next(c echo.Context) *middleware.ProxyTarget {
-	if c.Request().URL.Path == "/run/predict" {
-		if isPredict(c) {
-			sb.sq.Lock()
-			defer sb.sq.Unlock()
-			if sb.sq.await(SD) && sb.llm != nil {
-				sb.llm.unload()
+func newSDProxy(target *url.URL, sq *serviceQueue) (result echo.MiddlewareFunc) {
+	result = proxy.NewProxyWrapper(target, &proxy.Interceptor{
+		Before: func(c echo.Context) {
+			if c.Request().URL.Path == "/run/predict" {
+				if isPredict(c) {
+					sq.Lock()
+					defer sq.Unlock()
+					sq.await(SD)
+				}
 			}
-		}
-	}
-	return sb.ProxyBalancer.Next(c)
-}
 
-func newSDProxy(target *url.URL, sq *serviceQueue) (result *sdbalancer) {
-	result = &sdbalancer{
-		ProxyBalancer: middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{
-			{URL: target},
-		}),
-		sq: sq,
-	}
-	result.proxy = middleware.ProxyWithConfig(middleware.ProxyConfig{
-		Balancer: result,
-		ModifyResponse: sq.serviceCloser(func(path string) bool {
+		},
+		After: sq.serviceCloser(func(path string) bool {
 			return path == "/internal/progress"
 		}, time.Second*5, false),
 	})

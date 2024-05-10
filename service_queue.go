@@ -13,13 +13,20 @@ const (
 	NONE svcType = iota
 	SD
 	LLM
+	TTS
 )
+
+type cleanupFunc struct {
+	f       func()
+	service svcType
+}
 
 type serviceQueue struct {
 	sync.Mutex
 	cv           *sync.Cond
 	cleanupTimer *time.Timer
 	service      svcType
+	cf           *cleanupFunc // executes after await if service changed
 }
 
 func newServiceQueue() *serviceQueue {
@@ -40,6 +47,11 @@ func (sq *serviceQueue) await(t svcType) bool {
 	}
 	log.Printf("*** Service is %v, changing ***", sq.service)
 	sq.setService(t)
+	if sq.cf != nil && sq.cf.f != nil && sq.cf.service != t {
+		log.Printf("*** Running cleanup func ***")
+		sq.cf.f()
+		sq.cf = nil
+	}
 	return true
 }
 
