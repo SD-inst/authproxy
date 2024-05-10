@@ -120,12 +120,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	var llm *llmbalancer = nil
+	sdp := newSDProxy(tgturl, sq)
+	e.Group("/*", earlyCheckMiddleware(), sdp)
 	if llmurl.Scheme != "" {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
 		}
-		llm = NewLLMBalancer(llmurl, sq, wd)
+		llm := NewLLMBalancer(llmurl, sq, wd)
 		llm.timeoutMins = params.LLMTimeout
 		llm.modelName = params.LLMModel
 		llm.loraNames = params.LLMLoras
@@ -137,8 +138,6 @@ func main() {
 		e.GET("/v1/models", llm.handleModels)
 		e.GET("/v1/models/*", llm.forbidden)
 	}
-	sdp := newSDProxy(tgturl, sq)
-	e.Group("/*", earlyCheckMiddleware(), sdp)
 	if params.LoRAPath != "" {
 		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker, mchan)
 	}

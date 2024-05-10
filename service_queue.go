@@ -77,10 +77,12 @@ func (sq *serviceQueue) setService(s svcType) {
 	sq.cv.Broadcast()
 }
 
-func (sq *serviceQueue) serviceCloser(pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(r *http.Response) error {
+func (sq *serviceQueue) serviceCloser(t svcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(r *http.Response) error {
 	return func(r *http.Response) error {
 		path := r.Request.URL.Path
 		if pathChecker(path) {
+			sq.Lock()
+			sq.await(t)
 			if closeOnBody {
 				r.Body = bodyWrapper{ReadCloser: r.Body, onClose: func() {
 					log.Printf("*** Closing body ***")
@@ -90,7 +92,6 @@ func (sq *serviceQueue) serviceCloser(pathChecker func(path string) bool, timeou
 					sq.Unlock()
 				}}
 			}
-			sq.Lock()
 			sq.setCleanup(timeout)
 			sq.Unlock()
 		}

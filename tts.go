@@ -26,7 +26,7 @@ func newTTSProxy(ttsurl *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) echo.
 					service: TTS}
 			}
 		},
-		After: sq.serviceCloser(func(path string) bool {
+		After: sq.serviceCloser(TTS, func(path string) bool {
 			return path == "/api/generate" || path == "/api/rvc"
 		}, time.Second*5, true)},
 	)

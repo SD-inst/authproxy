@@ -74,9 +74,9 @@ func NewLLMBalancer(target *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) *l
 				result.ensureLoaded()
 			}
 		},
-		After: sq.serviceCloser(func(path string) bool {
-			return path == "/v1/chat/completions" || path == "/v1/completions"
-		}, time.Second*5, true),
+		After: sq.serviceCloser(LLM, func(path string) bool {
+			return path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode"
+		}, time.Second*30, true),
 	})
 	return &result
 }
