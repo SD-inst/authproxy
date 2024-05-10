@@ -81,11 +81,6 @@ func NewLLMBalancer(target *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) *l
 	return &result
 }
 
-func (l *llmbalancer) unload() {
-	log.Printf("Unloading the model")
-	l.post("/v1/internal/model/unload", TBody{})
-}
-
 func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 	buf := bytes.Buffer{}
 	json.NewEncoder(&buf).Encode(body)
