@@ -32,9 +32,11 @@ func NewProxyWrapper(targetURL *url.URL, i *Interceptor) echo.MiddlewareFunc {
 		}), i: i},
 		ErrorHandler: func(c echo.Context, err error) error {
 			if i != nil && i.After != nil {
-				return i.After(c.Request(), nil)
+				if err := i.After(c.Request(), nil); err != nil {
+					return err
+				}
 			}
-			return nil
+			return err
 		},
 		ModifyResponse: func(r *http.Response) error {
 			if i != nil && i.After != nil {
