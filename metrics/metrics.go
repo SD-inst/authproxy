@@ -10,9 +10,10 @@ import (
 )
 
 type Metrics struct {
-	reg     prometheus.Registerer
-	metrics map[MetricID]prometheus.Metric
-	updater chan MetricUpdate
+	reg          prometheus.Registerer
+	metrics      map[MetricID]prometheus.Metric
+	updater      chan MetricUpdate
+	pushPassword string
 }
 
 type MetricID int
@@ -26,6 +27,7 @@ const (
 	GPU_JOULES_SPENT
 	UPLOAD_COUNT
 	UPLOAD_SIZE
+	LLM_TOKENS
 )
 
 type MetricUpdate struct {
@@ -62,8 +64,30 @@ func (m *Metrics) register(id MetricID, t prometheus.ValueType, name string, hel
 	m.reg.MustRegister(newMetric.(prometheus.Collector))
 }
 
-func NewMetrics(e *echo.Echo) chan<- MetricUpdate {
-	m := Metrics{reg: prometheus.NewRegistry(), metrics: map[MetricID]prometheus.Metric{}, updater: make(chan MetricUpdate, 100)}
+func (m *Metrics) handleMetricPush(c echo.Context) error {
+	var params struct {
+		Password string  `json:"password"`
+		Name     string  `json:"name"`
+		Value    float64 `json:"value"`
+	}
+	if err := c.Bind(&params); err != nil {
+		log.Printf("Error binding params: %s", err)
+		return err
+	}
+	if params.Password != m.pushPassword {
+		return c.String(401, "Invalid password")
+	}
+	switch params.Name {
+	case "llm":
+		m.updater <- MetricUpdate{Type: LLM_TOKENS, Value: params.Value}
+	default:
+		return c.String(400, "Invalid name")
+	}
+	return nil
+}
+
+func NewMetrics(e *echo.Echo, pushPassword string) chan<- MetricUpdate {
+	m := Metrics{reg: prometheus.NewRegistry(), metrics: map[MetricID]prometheus.Metric{}, updater: make(chan MetricUpdate, 100), pushPassword: pushPassword}
 	m.register(TASKS_COMPLETED, prometheus.CounterValue, "tasks_completed", "Number of tasks processed")
 	m.register(GPU_ACTIVE_TIME, prometheus.CounterValue, "gpu_active_time", "Number of seconds the GPU was spinning")
 	m.register(QUEUE_LENGTH, prometheus.GaugeValue, "queue_length", "Number of tasks queued for processing")
@@ -72,12 +96,16 @@ func NewMetrics(e *echo.Echo) chan<- MetricUpdate {
 	m.register(GPU_JOULES_SPENT, prometheus.CounterValue, "gpu_joules_spent", "Amount of joules converted to warm the air")
 	m.register(UPLOAD_COUNT, prometheus.CounterValue, "upload_count", "Number of LoRAs uploaded")
 	m.register(UPLOAD_SIZE, prometheus.CounterValue, "upload_size", "Total size of LoRAs uploaded")
+	m.register(LLM_TOKENS, prometheus.CounterValue, "llm_tokens", "Total number of tokens generated with the LLM")
 
 	h := promhttp.HandlerFor(m.reg.(prometheus.Gatherer), promhttp.HandlerOpts{Registry: m.reg})
 	e.GET("/metrics", func(c echo.Context) error {
 		h.ServeHTTP(c.Response(), c.Request())
 		return nil
 	})
+	if m.pushPassword != "" {
+		e.POST("/metrics", m.handleMetricPush)
+	}
 	go m.start()
 	return m.updater
 }

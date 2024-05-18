@@ -41,6 +41,7 @@ var params struct {
 	FIFOPath     string   `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string
 	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
+	PushPassword string `long:"push-password" description:"Password to push prometheus metrics from other services"`
 }
 
 func post(path string) {
@@ -83,7 +84,7 @@ func main() {
 		log.Fatal(err)
 	}
 	e := echo.New()
-	mchan := metrics.NewMetrics(e)
+	mchan := metrics.NewMetrics(e, params.PushPassword)
 	e.Use(echojwt.WithConfig(echojwt.Config{
 		SigningKey:   []byte(params.JWTSecret),
 		ErrorHandler: keyErrorHandler,
