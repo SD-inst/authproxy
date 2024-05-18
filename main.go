@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -40,6 +41,14 @@ var params struct {
 	FIFOPath     string   `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string
 	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
+}
+
+func post(path string) {
+	_, err := http.Post(params.TargetURL+path, "", nil)
+	if err != nil {
+		log.Printf("*** Error calling %s: %s", path, err)
+		return
+	}
 }
 
 func main() {
@@ -125,7 +134,15 @@ func main() {
 	e.Group("/*", earlyCheckMiddleware(), sdp)
 	e.POST("/internal/join", func(c echo.Context) error {
 		sq.Lock()
-		sq.await(SD)
+		if sq.await(SD) {
+			post("/sdapi/v1/reload-checkpoint")
+		}
+		sq.cf = &cleanupFunc{
+			f: func() {
+				post("/sdapi/v1/unload-checkpoint")
+			},
+			service: SD,
+		}
 		sq.Unlock()
 		return nil
 	})
