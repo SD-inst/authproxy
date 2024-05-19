@@ -1,7 +1,6 @@
 package main
 
 import (
-	"log"
 	"net/url"
 	"time"
 
@@ -14,7 +13,6 @@ func newTTSProxy(ttsurl *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) echo.
 	return proxy.NewProxyWrapper(ttsurl, &proxy.Interceptor{
 		Before: func(c echo.Context) {
 			path := c.Request().URL.Path
-			log.Printf("TTS path: %s", path)
 			if c.Request().Method == "POST" && path == "/api/generate" || path == "/api/rvc" {
 				sq.Lock()
 				defer sq.Unlock()
