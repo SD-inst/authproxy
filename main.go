@@ -133,27 +133,7 @@ func main() {
 	}
 	sdp := newSDProxy(tgturl)
 	e.Group("/*", earlyCheckMiddleware(), sdp)
-	e.POST("/internal/join", func(c echo.Context) error {
-		sq.Lock()
-		if sq.await(SD) {
-			post("/sdapi/v1/reload-checkpoint")
-		}
-		sq.cf = &cleanupFunc{
-			f: func() {
-				post("/sdapi/v1/unload-checkpoint")
-			},
-			service: SD,
-		}
-		sq.Unlock()
-		return nil
-	})
-	e.POST("/internal/leave", func(c echo.Context) error {
-		sq.Lock()
-		sq.await(SD)
-		sq.setCleanup(time.Second * 3)
-		sq.Unlock()
-		return nil
-	})
+	addSDQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
