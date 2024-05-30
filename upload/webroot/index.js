@@ -1,4 +1,4 @@
-let sort = ['name', 'asc'];
+let sort = JSON.parse(localStorage.getItem('upload_sort') ?? "['name', 'asc']");
 
 function getCurrentPath() {
     let currentPath = decodeURI(location.hash);
@@ -21,6 +21,7 @@ function setSort(col) {
     } else {
         sort = [col, 'asc'];
     }
+    localStorage.setItem('upload_sort', JSON.stringify(sort));
     load();
 }
 
