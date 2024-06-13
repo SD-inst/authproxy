@@ -40,7 +40,7 @@
                     switch (type) {
                         case 'progress':
                             document.getElementById('tasks').innerText =
-                                '' + data.current + (data.queued ? ` [${data.queued} queued]` : '');
+                                '' + (data.current < 0 ? 'preparing...' : data.current) + (data.queued ? ` [${data.queued} queued]` : '');
                             document
                                 .getElementById('progress')
                                 .style.setProperty(
@@ -83,6 +83,28 @@
                                 'total'
                             ).innerText = `Total: ${data.total} MB`;
                             break;
+                        case 'service':
+                            let service = '';
+                            switch (data.service) {
+                                case 0:
+                                    service = 'NONE'
+                                    break;
+                                case 1:
+                                    service = 'A1111'
+                                    break;
+                                case 2:
+                                    service = 'LLM'
+                                    break;
+                                case 3:
+                                    service = 'TTS'
+                                    break;
+                                case 4:
+                                    service = 'CUI'
+                                    break;
+                                default:
+                                    break;
+                            }
+                            document.getElementById('service').innerText = service;
                     }
                 };
             }
@@ -144,6 +166,9 @@
                     >
                     <div class="mui-col-xs-12 mui-col-md-6">
                         <div class="mui--text-subhead">Task</div>
+                        <div class="mui--text-body1">
+                            Service: <span id="service">NONE</span>
+                        </div>
                         <div class="mui--text-body1">
                             Description: <span id="description"></span>
                         </div>

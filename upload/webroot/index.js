@@ -1,4 +1,4 @@
-let sort = JSON.parse(localStorage.getItem('upload_sort') ?? "['name', 'asc']");
+let sort = JSON.parse(localStorage.getItem('upload_sort') ?? '["name", "asc"]');
 
 function getCurrentPath() {
     let currentPath = decodeURI(location.hash);

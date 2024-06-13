@@ -28,11 +28,13 @@ type serviceQueue struct {
 	cleanupTimer *time.Timer
 	service      svcType
 	cf           *cleanupFunc // executes after await if service changed
+	svcChan      chan<- int
 }
 
-func newServiceQueue() *serviceQueue {
+func newServiceQueue(svcChan chan<- int) *serviceQueue {
 	result := serviceQueue{service: NONE}
 	result.cv = sync.NewCond(&result)
+	result.svcChan = svcChan
 	return &result
 }
 
@@ -77,6 +79,7 @@ func (sq *serviceQueue) setService(s svcType) {
 	log.Printf("*** Setting service to %v ***", s)
 	sq.service = s
 	sq.cv.Broadcast()
+	sq.svcChan <- int(s)
 }
 
 func (sq *serviceQueue) serviceCloser(t svcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {

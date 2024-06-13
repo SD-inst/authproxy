@@ -120,14 +120,15 @@ func main() {
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
 	wd := watchdog.NewWatchdog(params.FIFOPath)
-	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan)
+	svcChan := make(chan int)
+	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan, svcChan)
 	pr.AddHandlers(e.Group("/q"))
 	pr.Start()
 	tgturl, err := url.Parse(params.TargetURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	sq := newServiceQueue()
+	sq := newServiceQueue(svcChan)
 	llmurl, err := url.Parse(params.LLMURL)
 	if err != nil {
 		log.Fatal(err)

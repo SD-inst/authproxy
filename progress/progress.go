@@ -58,10 +58,11 @@ type progress struct {
 	wd      *watchdog.Watchdog
 	timeout time.Duration
 	m       chan<- metrics.MetricUpdate
+	svcChan <-chan int
 }
 
-func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m}
+func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan int) *progress {
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan}
 }
 
 func (p *progress) updater() {
@@ -144,10 +145,19 @@ func (p *progress) gpuStatus() {
 	cmd.Wait()
 }
 
+func (p *progress) serviceUpdater() {
+	for svc := range p.svcChan {
+		p.b.Broadcast(events.Packet{Type: events.SERVICE_UPDATE, Data: events.ServiceUpdate{
+			Service: svc,
+		}})
+	}
+}
+
 func (p *progress) Start() {
 	go p.b.Start(context.Background())
 	go p.updater()
 	go p.gpuStatus()
+	go p.serviceUpdater()
 }
 
 func (p *progress) AddHandlers(e *echo.Group) {

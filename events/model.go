@@ -8,6 +8,7 @@ const (
 	GPU_UPDATE      packetType = "gpu"
 	DOWNLOAD_UPDATE packetType = "download"
 	MESSAGE_UPDATE  packetType = "message"
+	SERVICE_UPDATE  packetType = "service"
 )
 
 type Packet struct {
@@ -25,4 +26,8 @@ type MessageUpdate struct {
 type UsersUpdate struct {
 	Users    int `json:"users"`
 	Sessions int `json:"sessions"`
+}
+
+type ServiceUpdate struct {
+	Service int `json:"service"`
 }
