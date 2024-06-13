@@ -30,6 +30,7 @@ var params struct {
 	TargetURL    string   `short:"t" description:"Target URL to proxy to"`
 	LLMURL       string   `long:"llm-url" description:"Target LLM URL to proxy to"`
 	TTSURL       string   `long:"tts-url" description:"TTS URL"`
+	CUIURL       string   `long:"cui-url" description:"ComfyUI URL to proxy to"`
 	Address      string   `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
 	LLMTimeout   int      `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
 	LLMModel     string   `long:"llm-model" description:"LLM model to autoload"`
@@ -159,6 +160,13 @@ func main() {
 			log.Fatalf("Error parsing TTS URL: %s", err)
 		}
 		e.Group("/tts/*", middleware.Rewrite(map[string]string{"/tts/*": "/$1"}), newTTSProxy(ttsurl, sq, wd))
+	}
+	if params.CUIURL != "" {
+		cuiurl, err := url.Parse(params.CUIURL)
+		if err != nil {
+			log.Fatalf("Error parsing CUI URL: %s", err)
+		}
+		e.Group("/cui/*", middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl, sq))
 	}
 	e.Start(params.Address)
 }

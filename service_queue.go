@@ -14,6 +14,7 @@ const (
 	SD
 	LLM
 	TTS
+	CUI
 )
 
 type cleanupFunc struct {
