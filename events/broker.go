@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"log"
+	"time"
 )
 
 type subscriber struct {
@@ -74,5 +75,16 @@ func (b *Broker) Start(ctx context.Context) {
 				}
 			}
 		}
+	}
+}
+
+func (b *Broker) State(s packetType) any {
+	resp := make(chan Packet)
+	b.reqInit <- requestInit{stateType: s, ch: resp}
+	select {
+	case r := <-resp:
+		return r
+	case <-time.After(time.Second):
+		return nil
 	}
 }

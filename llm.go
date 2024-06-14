@@ -13,6 +13,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/proxy"
+	"github.com/rkfg/authproxy/servicequeue"
 	"github.com/rkfg/authproxy/watchdog"
 )
 
@@ -24,19 +25,7 @@ type llmbalancer struct {
 	modelName   string
 	loraNames   []string
 	args        any
-	sq          *serviceQueue
-}
-
-type bodyWrapper struct {
-	io.ReadCloser
-	onClose func()
-}
-
-func (b bodyWrapper) Close() error {
-	if b.onClose != nil {
-		b.onClose()
-	}
-	return b.ReadCloser.Close()
+	sq          *servicequeue.ServiceQueue
 }
 
 type TBody map[string]any
@@ -59,7 +48,7 @@ func (l *llmbalancer) unload() {
 	l.post("/v1/internal/model/unload", TBody{})
 }
 
-func NewLLMBalancer(target *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) *llmbalancer {
+func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog.Watchdog) *llmbalancer {
 	result := llmbalancer{sq: sq, target: target}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
 		Before: func(c echo.Context) {
@@ -69,17 +58,17 @@ func NewLLMBalancer(target *url.URL, sq *serviceQueue, wd *watchdog.Watchdog) *l
 			if method == "POST" && (path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode") {
 				sq.Lock()
 				defer sq.Unlock()
-				sq.await(LLM)
-				sq.cf = &cleanupFunc{
-					f: func() {
+				sq.Await(servicequeue.LLM)
+				sq.CF = &servicequeue.CleanupFunc{
+					F: func() {
 						result.unload()
 					},
-					service: LLM,
+					Service: servicequeue.LLM,
 				}
 				result.ensureLoaded()
 			}
 		},
-		After: sq.serviceCloser(LLM, func(path string) bool {
+		After: sq.ServiceCloser(servicequeue.LLM, func(path string) bool {
 			return path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode"
 		}, time.Second*30, true),
 	})

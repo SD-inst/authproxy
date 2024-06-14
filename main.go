@@ -17,6 +17,7 @@ import (
 	"github.com/rkfg/authproxy/events"
 	"github.com/rkfg/authproxy/metrics"
 	"github.com/rkfg/authproxy/progress"
+	"github.com/rkfg/authproxy/servicequeue"
 	"github.com/rkfg/authproxy/upload"
 	"github.com/rkfg/authproxy/watchdog"
 	"golang.org/x/crypto/bcrypt"
@@ -120,7 +121,7 @@ func main() {
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
 	wd := watchdog.NewWatchdog(params.FIFOPath)
-	svcChan := make(chan int)
+	svcChan := make(chan servicequeue.SvcType)
 	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan, svcChan)
 	pr.AddHandlers(e.Group("/q"))
 	pr.Start()
@@ -128,7 +129,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sq := newServiceQueue(svcChan)
+	sq := servicequeue.NewServiceQueue(svcChan)
 	llmurl, err := url.Parse(params.LLMURL)
 	if err != nil {
 		log.Fatal(err)

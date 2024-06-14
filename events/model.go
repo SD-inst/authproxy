@@ -1,5 +1,7 @@
 package events
 
+import "github.com/rkfg/authproxy/servicequeue"
+
 type packetType string
 
 const (
@@ -29,5 +31,5 @@ type UsersUpdate struct {
 }
 
 type ServiceUpdate struct {
-	Service int `json:"service"`
+	Service servicequeue.SvcType `json:"service"`
 }
