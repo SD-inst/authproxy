@@ -79,7 +79,7 @@ func (b *Broker) Start(ctx context.Context) {
 }
 
 func (b *Broker) State(s packetType) any {
-	resp := make(chan Packet)
+	resp := make(chan Packet, 1)
 	b.reqInit <- requestInit{stateType: s, ch: resp}
 	select {
 	case r := <-resp:
