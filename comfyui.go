@@ -28,7 +28,7 @@ func newCUIProxy(cuiurl *url.URL, sq *servicequeue.ServiceQueue) echo.Middleware
 			}
 		},
 		After: func(req *http.Request, resp *http.Response) error {
-			if resp.StatusCode != 200 {
+			if resp.StatusCode >= 500 {
 				sq.Lock()
 				defer sq.Unlock()
 				sq.Await(servicequeue.CUI)
@@ -36,7 +36,7 @@ func newCUIProxy(cuiurl *url.URL, sq *servicequeue.ServiceQueue) echo.Middleware
 				return nil
 			}
 			return sq.ServiceCloser(servicequeue.CUI, func(path string) bool {
-				return path == "/view"
+				return path == "/view" && req.Method == "GET"
 			}, time.Second*5, true)(req, resp)
 		}},
 	)
