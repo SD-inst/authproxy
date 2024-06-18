@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -36,7 +37,7 @@ func newCUIProxy(cuiurl *url.URL, sq *servicequeue.ServiceQueue) echo.Middleware
 				return nil
 			}
 			return sq.ServiceCloser(servicequeue.CUI, func(path string) bool {
-				return path == "/view" && req.Method == "GET"
+				return strings.HasPrefix(path, "/view") && req.Method == "GET"
 			}, time.Second*5, true)(req, resp)
 		}},
 	)
