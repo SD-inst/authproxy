@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -29,16 +28,23 @@ func newCUIProxy(cuiurl *url.URL, sq *servicequeue.ServiceQueue) echo.Middleware
 			}
 		},
 		After: func(req *http.Request, resp *http.Response) error {
-			if resp.StatusCode >= 500 {
+			if resp.StatusCode >= 400 {
 				sq.Lock()
 				defer sq.Unlock()
 				sq.Await(servicequeue.CUI)
 				sq.SetService(servicequeue.NONE)
-				return nil
 			}
-			return sq.ServiceCloser(servicequeue.CUI, func(path string) bool {
-				return strings.HasPrefix(path, "/view") && req.Method == "GET"
-			}, time.Second*5, true)(req, resp)
+			return nil
 		}},
 	)
+}
+
+func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
+	e.POST("/cui/leave", func(c echo.Context) error {
+		sq.Lock()
+		sq.Await(servicequeue.CUI)
+		sq.SetCleanup(time.Second * 3)
+		sq.Unlock()
+		return nil
+	})
 }

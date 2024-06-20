@@ -93,7 +93,7 @@ func main() {
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
 			path := c.Path()
-			return path == "/login" || path == "/metrics" || path == "/internal/join" || path == "/internal/leave" || strings.HasPrefix(path, "/v1/")
+			return path == "/login" || path == "/metrics" || path == "/internal/join" || path == "/internal/leave" || path == "/cui/leave" || strings.HasPrefix(path, "/v1/")
 		},
 	}))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
@@ -168,6 +168,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error parsing CUI URL: %s", err)
 		}
+		addCUIHandlers(e, sq)
 		e.Group("/cui/*", middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl, sq))
 	}
 	e.Start(params.Address)
