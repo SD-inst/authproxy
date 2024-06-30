@@ -11,18 +11,8 @@ import (
 	"github.com/rkfg/authproxy/servicequeue"
 )
 
-func newCUIProxy(cuiurl *url.URL, sq *servicequeue.ServiceQueue) echo.MiddlewareFunc {
-	return proxy.NewProxyWrapper(cuiurl, &proxy.Interceptor{
-		After: func(req *http.Request, resp *http.Response) error {
-			if resp.StatusCode >= 400 {
-				sq.Lock()
-				defer sq.Unlock()
-				sq.Await(servicequeue.CUI)
-				sq.SetService(servicequeue.NONE)
-			}
-			return nil
-		}},
-	)
+func newCUIProxy(cuiurl *url.URL) echo.MiddlewareFunc {
+	return proxy.NewProxyWrapper(cuiurl, nil)
 }
 
 func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL) {

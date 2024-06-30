@@ -169,7 +169,7 @@ func main() {
 			log.Fatalf("Error parsing CUI URL: %s", err)
 		}
 		addCUIHandlers(e, sq, cuiurl)
-		e.Group("/cui/*", middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl, sq))
+		e.Group("/cui/*", middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	e.Start(params.Address)
 }
