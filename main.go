@@ -93,7 +93,7 @@ func main() {
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
 			path := c.Path()
-			return path == "/login" || path == "/metrics" || path == "/internal/join" || path == "/internal/leave" || path == "/cui/join" || path == "/cui/leave" || strings.HasPrefix(path, "/v1/")
+			return path == "/login" || path == "/metrics" || path == "/internal/join" || path == "/internal/leave" || path == "/cui/join" || path == "/cui/leave" || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/sdapi/")
 		},
 	}))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
@@ -136,6 +136,7 @@ func main() {
 	}
 	sdp := newSDProxy(tgturl)
 	e.Group("/*", earlyCheckMiddleware(), sdp)
+	e.Group("/sdapi", sdp)
 	addSDQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
 		if params.LLMModel == "" {

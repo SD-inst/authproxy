@@ -33,7 +33,7 @@ func addSDQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	e.POST("/internal/leave", func(c echo.Context) error {
 		sq.Lock()
 		sq.Await(servicequeue.SD)
-		sq.SetCleanup(time.Second * 3)
+		sq.SetCleanup(time.Second * 7)
 		sq.Unlock()
 		return nil
 	})
