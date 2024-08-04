@@ -14,18 +14,16 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/proxy"
 	"github.com/rkfg/authproxy/servicequeue"
-	"github.com/rkfg/authproxy/watchdog"
 )
 
 type llmbalancer struct {
-	proxy       echo.MiddlewareFunc
-	target      *url.URL
-	client      http.Client
-	timeoutMins int
-	modelName   string
-	loraNames   []string
-	args        any
-	sq          *servicequeue.ServiceQueue
+	proxy     echo.MiddlewareFunc
+	target    *url.URL
+	client    http.Client
+	modelName string
+	loraNames []string
+	args      any
+	sq        *servicequeue.ServiceQueue
 }
 
 type TBody map[string]any
@@ -48,7 +46,7 @@ func (l *llmbalancer) unload() {
 	l.post("/v1/internal/model/unload", TBody{})
 }
 
-func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog.Watchdog) *llmbalancer {
+func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer {
 	result := llmbalancer{sq: sq, target: target}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
 		Before: func(c echo.Context) {

@@ -33,7 +33,6 @@ var params struct {
 	TTSURL       string   `long:"tts-url" description:"TTS URL"`
 	CUIURL       string   `long:"cui-url" description:"ComfyUI URL to proxy to"`
 	Address      string   `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
-	LLMTimeout   int      `long:"llm-timeout" description:"Number of minutes after which the LLM will be automatically unloaded to free VRAM" default:"10"`
 	LLMModel     string   `long:"llm-model" description:"LLM model to autoload"`
 	LLMArgs      string   `long:"llm-args" description:"JSON-formatted parameters to load the model"`
 	LLMLoras     []string `long:"llm-lora" description:"LLM loras to autoload"`
@@ -142,8 +141,7 @@ func main() {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
 		}
-		llm := NewLLMBalancer(llmurl, sq, wd)
-		llm.timeoutMins = params.LLMTimeout
+		llm := NewLLMBalancer(llmurl, sq)
 		llm.modelName = params.LLMModel
 		llm.loraNames = params.LLMLoras
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
