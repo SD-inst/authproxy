@@ -205,6 +205,11 @@ func (u *uploader) stat(c echo.Context) error {
 	return JSONOk(c, Result{"free": humanize.IBytes(stat.Bavail * uint64(stat.Bsize))})
 }
 
+func modelAllowed(modelType string) bool {
+	t := strings.ToLower(modelType)
+	return t == "lora" || t == "locon" || t == "dora"
+}
+
 func (u *uploader) download(c echo.Context) error {
 	var params struct {
 		URL string `form:"url"`
@@ -246,7 +251,7 @@ func (u *uploader) download(c echo.Context) error {
 			}
 		}
 		json.NewDecoder(resp.Body).Decode(&respModel)
-		if respModel.Model.Type != "LORA" && respModel.Model.Type != "LoCon" {
+		if !modelAllowed(respModel.Model.Type) {
 			u.dlError("Only LoRA download is supported, this is %s", respModel.Model.Type)
 			return nil
 		}
@@ -267,7 +272,7 @@ func (u *uploader) download(c echo.Context) error {
 			}
 		}
 		json.NewDecoder(resp.Body).Decode(&respModel)
-		if respModel.Type != "LORA" && respModel.Type != "LoCon" {
+		if !modelAllowed(respModel.Type) {
 			u.dlError("Only LoRA download is supported, this is %s", respModel.Type)
 			return nil
 		}
