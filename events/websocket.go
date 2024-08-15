@@ -19,6 +19,7 @@ func (b *Broker) WSHandler(c echo.Context) error {
 	quit := make(chan struct{})
 	b.reqInit <- requestInit{ch: ch, stateType: PROGRESS_UPDATE}
 	b.reqInit <- requestInit{ch: ch, stateType: GPU_UPDATE}
+	b.reqInit <- requestInit{ch: ch, stateType: SERVICE_UPDATE}
 	go func() {
 		var v string
 		for {
