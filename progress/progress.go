@@ -40,17 +40,19 @@ type GPUUpdate struct {
 	Total uint64 `json:"total"`
 }
 
+type sdprogressState struct {
+	JobTimestamp  string  `json:"job_timestamp"`
+	Job           *string `json:"job"`
+	JobCount      int     `json:"job_count"`
+	SamplingSteps int     `json:"sampling_steps"`
+	SamplingStep  int     `json:"sampling_step"`
+}
+
 type sdprogress struct {
 	Progress    float64 `json:"progress"`
 	EtaRelative float64 `json:"eta_relative"`
 	QueueSize   int     `json:"queue_size"`
-	State       struct {
-		JobTimestamp  string  `json:"job_timestamp"`
-		Job           *string `json:"job"`
-		JobCount      int     `json:"job_count"`
-		SamplingSteps int     `json:"sampling_steps"`
-		SamplingStep  int     `json:"sampling_step"`
-	}
+	State       sdprogressState
 }
 
 type progress struct {
@@ -60,26 +62,18 @@ type progress struct {
 	timeout time.Duration
 	m       chan<- metrics.MetricUpdate
 	svcChan <-chan servicequeue.SvcType
+	pchan   chan sdprogress
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcType) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan}
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100)}
 }
 
 func (p *progress) updater() {
-	client := http.Client{Timeout: time.Second * 5}
 	lastProgress := float64(0)
 	lastID := ""
 	jobStart := time.Now()
-	for {
-		time.Sleep(time.Second)
-		resp, err := client.Get(p.sdhost + "/sdapi/v1/progress")
-		if err != nil {
-			log.Printf("Error getting data: %v", err)
-			continue
-		}
-		var sdp sdprogress
-		json.NewDecoder(resp.Body).Decode(&sdp)
+	for sdp := range p.pchan {
 		if sdp.State.Job == nil {
 			continue
 		}
@@ -94,13 +88,17 @@ func (p *progress) updater() {
 			lastID = *sdp.State.Job
 		}
 		if lastProgress != sdp.Progress {
+			eta := time.Duration(sdp.EtaRelative * float64(time.Second))
+			if eta < 1 && sdp.State.SamplingStep > 0 { // don't compare floats pls
+				eta = time.Duration(float64(time.Since(jobStart)) * (float64(sdp.State.SamplingSteps)/float64(sdp.State.SamplingStep) - 1))
+			}
 			p.b.Broadcast(events.Packet{
 				Type: events.PROGRESS_UPDATE,
 				Data: ProgressUpdate{
 					Current:      sdp.State.JobCount,
 					Queued:       sdp.QueueSize,
 					Progress:     sdp.Progress,
-					ETA:          time.Duration(sdp.EtaRelative * float64(time.Second)).Truncate(time.Second).String(),
+					ETA:          eta.Truncate(time.Second).String(),
 					Description:  fmt.Sprintf("%s %d/%d steps", "rendering", sdp.State.SamplingStep, sdp.State.SamplingSteps),
 					LastActive:   time.Now(),
 					TaskDuration: time.Since(jobStart).Truncate(time.Second).String(),
@@ -163,18 +161,50 @@ func (p *progress) serviceUpdater() {
 	}
 }
 
-func (p *progress) Start() {
+func (p *progress) sdQuery(sq *servicequeue.ServiceQueue) {
+	client := http.Client{Timeout: time.Second * 5}
+	for {
+		time.Sleep(time.Second)
+		sq.Lock()
+		sq.AwaitCheck(servicequeue.SD)
+		sq.Unlock()
+		resp, err := client.Get(p.sdhost + "/sdapi/v1/progress")
+		if err != nil {
+			log.Printf("Error getting data: %v", err)
+			continue
+		}
+		var sdp sdprogress
+		json.NewDecoder(resp.Body).Decode(&sdp)
+		p.pchan <- sdp
+	}
+}
+
+func (p *progress) handleCUIProgress(c echo.Context) error {
+	var params struct {
+		Value float64 `json:"value"`
+		Max   float64 `json:"max"`
+		Queue int     `json:"queue"`
+		Job   string  `json:"prompt_id"`
+	}
+	c.Bind(&params)
+	p.pchan <- sdprogress{Progress: params.Value / params.Max, QueueSize: params.Queue, State: sdprogressState{Job: &params.Job, SamplingSteps: int(params.Max), SamplingStep: int(params.Value)}}
+	return nil
+}
+
+func (p *progress) Start(sq *servicequeue.ServiceQueue) {
 	go p.b.Start(context.Background())
 	go p.updater()
+	go p.sdQuery(sq)
 	go p.gpuStatus()
 	go p.serviceUpdater()
 }
 
-func (p *progress) AddHandlers(e *echo.Group) {
+func (p *progress) AddHandlers(e *echo.Echo) {
 	root, err := fs.Sub(webroot, "webroot")
 	if err != nil {
 		log.Fatal(err)
 	}
-	e.GET("/*", echo.StaticDirectoryHandler(root, false))
-	e.GET("/ws", p.b.WSHandler)
+	e.GET("/q/*", echo.StaticDirectoryHandler(root, false))
+	e.GET("/q/ws", p.b.WSHandler)
+	e.POST("/cui/progress", p.handleCUIProgress)
 }

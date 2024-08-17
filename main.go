@@ -45,6 +45,15 @@ var params struct {
 	PushPassword string `long:"push-password" description:"Password to push prometheus metrics from other services"`
 }
 
+var skipAuth = map[string][]string{
+	"path": {
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/cui/join", "/cui/leave", "/cui/progress",
+	},
+	"prefix": {
+		"/v1/", "/sdapi/",
+	},
+}
+
 func post(path string) {
 	_, err := http.Post(params.TargetURL+path, "", nil)
 	if err != nil {
@@ -92,7 +101,17 @@ func main() {
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
 			path := c.Path()
-			return path == "/login" || path == "/metrics" || path == "/internal/join" || path == "/internal/leave" || path == "/cui/join" || path == "/cui/leave" || strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/sdapi/")
+			for _, p := range skipAuth["path"] {
+				if path == p {
+					return true
+				}
+			}
+			for _, p := range skipAuth["prefix"] {
+				if strings.HasPrefix(path, p) {
+					return true
+				}
+			}
+			return false
 		},
 	}))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
@@ -121,14 +140,14 @@ func main() {
 	broker := events.NewBroker()
 	wd := watchdog.NewWatchdog(params.FIFOPath)
 	svcChan := make(chan servicequeue.SvcType)
+	sq := servicequeue.NewServiceQueue(svcChan)
 	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan, svcChan)
-	pr.AddHandlers(e.Group("/q"))
-	pr.Start()
+	pr.AddHandlers(e)
+	pr.Start(sq)
 	tgturl, err := url.Parse(params.TargetURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	sq := servicequeue.NewServiceQueue(svcChan)
 	llmurl, err := url.Parse(params.LLMURL)
 	if err != nil {
 		log.Fatal(err)

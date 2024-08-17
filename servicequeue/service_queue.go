@@ -57,10 +57,7 @@ func NewServiceQueue(svcChan chan<- SvcType) *ServiceQueue {
 
 // caller should lock and unlock sq, returns true if service has been changed or false if it was the same
 func (sq *ServiceQueue) Await(t SvcType) bool {
-	for sq.service != t && sq.service != NONE {
-		log.Printf("*** Waiting for service %v, have %v ***", t, sq.service)
-		sq.cv.Wait()
-	}
+	sq.AwaitCheck(t)
 	if sq.service == t {
 		log.Printf("*** Service is already %v, proceeding ***", t)
 		sq.CancelCleanup()
@@ -74,6 +71,13 @@ func (sq *ServiceQueue) Await(t SvcType) bool {
 		sq.CF = nil
 	}
 	return true
+}
+
+func (sq *ServiceQueue) AwaitCheck(t SvcType) {
+	for sq.service != t && sq.service != NONE {
+		log.Printf("*** Waiting for service %v, have %v ***", t, sq.service)
+		sq.cv.Wait()
+	}
 }
 
 func (sq *ServiceQueue) SetCleanup(d time.Duration) {
