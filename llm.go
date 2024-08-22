@@ -17,13 +17,14 @@ import (
 )
 
 type llmbalancer struct {
-	proxy     echo.MiddlewareFunc
-	target    *url.URL
-	client    http.Client
-	modelName string
-	loraNames []string
-	args      any
-	sq        *servicequeue.ServiceQueue
+	proxy         echo.MiddlewareFunc
+	target        *url.URL
+	client        http.Client
+	modelName     string
+	lastModelName string
+	loraNames     []string
+	args          any
+	sq            *servicequeue.ServiceQueue
 }
 
 type TBody map[string]any
@@ -53,18 +54,20 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer
 			log.Printf("Req: %s %s", c.Request().Method, c.Request().URL.String())
 			path := c.Request().URL.Path
 			method := c.Request().Method
-			if method == "POST" && (path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode") {
-				sq.Lock()
-				defer sq.Unlock()
-				sq.Await(servicequeue.LLM)
-				sq.CF = &servicequeue.CleanupFunc{
-					F: func() {
-						result.unload()
-					},
-					Service: servicequeue.LLM,
-				}
-				result.ensureLoaded()
+			if method != "POST" || path != "/v1/chat/completions" && path != "/v1/completions" && path != "/v1/internal/encode" {
+				return
 			}
+			sq.Lock()
+			defer sq.Unlock()
+			sq.Await(servicequeue.LLM)
+			sq.CF = &servicequeue.CleanupFunc{
+				F: func() {
+					result.unload()
+					result.lastModelName = ""
+				},
+				Service: servicequeue.LLM,
+			}
+			result.ensureLoaded(c)
 		},
 		After: sq.ServiceCloser(servicequeue.LLM, func(path string) bool {
 			return path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode"
@@ -87,13 +90,30 @@ func (l *llmbalancer) post(path string, body TBody) (TBody, error) {
 	return parseBody(resp.Body)
 }
 
-func (l *llmbalancer) ensureLoaded() error {
-	_, err := l.post("/v1/internal/token-count", TBody{"text": "ping"})
-	if err == nil {
+func (l *llmbalancer) ensureLoaded(c echo.Context) error {
+	if c.Request().RequestURI == "/v1/internal/encode" && l.lastModelName != "" {
 		return nil
 	}
-	log.Print("Model unloaded, reloading...")
-	resp, err := l.post("/v1/internal/model/load", TBody{"model_name": l.modelName, "args": l.args})
+	modelName := l.modelName
+	bodyBytes, err := io.ReadAll(c.Request().Body)
+	if err != nil {
+		return err
+	}
+	c.Request().Body = io.NopCloser(bytes.NewBuffer(bodyBytes)) // reset body
+	body := map[string]any{}
+	err = json.Unmarshal(bodyBytes, &body)
+	if err != nil {
+		return err
+	}
+	if model, ok := body["model"].(string); ok && model != "" {
+		modelName = model
+	}
+	if l.lastModelName == modelName {
+		return nil
+	} else {
+		log.Printf("Last loaded model is '%s', requested '%s', reloading...", l.lastModelName, modelName)
+	}
+	resp, err := l.post("/v1/internal/model/load", TBody{"model_name": modelName, "args": l.args})
 	if err != nil {
 		log.Printf("Error loading model: %s", err)
 		return err
@@ -103,6 +123,7 @@ func (l *llmbalancer) ensureLoaded() error {
 		return fmt.Errorf("%s", err)
 	}
 	log.Print("Model loaded")
+	l.lastModelName = modelName
 	if len(l.loraNames) > 0 {
 		resp, err = l.post("/v1/internal/lora/load", TBody{"lora_names": l.loraNames})
 		if err != nil {
