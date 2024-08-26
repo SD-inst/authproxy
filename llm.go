@@ -14,6 +14,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/proxy"
 	"github.com/rkfg/authproxy/servicequeue"
+	"github.com/rkfg/authproxy/watchdog"
 )
 
 type llmbalancer struct {
@@ -25,6 +26,7 @@ type llmbalancer struct {
 	loraNames     []string
 	args          any
 	sq            *servicequeue.ServiceQueue
+	wd            *watchdog.Watchdog
 }
 
 type TBody map[string]any
@@ -43,12 +45,12 @@ func parseBody(resp io.ReadCloser) (TBody, error) {
 }
 
 func (l *llmbalancer) unload() {
-	log.Printf("Unloading the model")
-	l.post("/v1/internal/model/unload", TBody{})
+	log.Printf("Cleanup, restarting the LLM backend")
+	l.wd.Send("restart text-generation-webui")
 }
 
-func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer {
-	result := llmbalancer{sq: sq, target: target}
+func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog.Watchdog) *llmbalancer {
+	result := llmbalancer{sq: sq, target: target, wd: wd}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
 		Before: func(c echo.Context) {
 			log.Printf("Req: %s %s", c.Request().Method, c.Request().URL.String())

@@ -160,7 +160,7 @@ func main() {
 		if params.LLMModel == "" {
 			log.Fatal("Specify the LLM model name")
 		}
-		llm := NewLLMBalancer(llmurl, sq)
+		llm := NewLLMBalancer(llmurl, sq, wd)
 		llm.modelName = params.LLMModel
 		llm.loraNames = params.LLMLoras
 		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
