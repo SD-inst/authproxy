@@ -1,0 +1,20 @@
+{
+    "models": {
+        "default": {
+            "n_ctx": 20480,
+            "n-gpu-layers": 256,
+            "flash_attn": true,
+            "tensorcores": true,
+            "cfg_cache": true,
+            "cache_4bit": true,
+            "loader": "llamacpp_HF"
+        },
+        "magnum-12b-v2-q8_0-HF": {},
+        "magnum-12b-v2.5-kto-Q8_0-HF": {},
+        "magnum-v3-34b-Q4_K_M-HF": {
+            "n_ctx": 8192,
+            "cfg_cache": false
+        }
+    },
+    "default_name": "mini-magnum-12b-v1.1-Q6_K-imat-HF"
+}

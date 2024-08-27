@@ -8,9 +8,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"strings"
+	"os"
 	"time"
 
+	"dario.cat/mergo"
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/proxy"
 	"github.com/rkfg/authproxy/servicequeue"
@@ -22,11 +23,25 @@ type llmbalancer struct {
 	target        *url.URL
 	client        http.Client
 	modelName     string
+	config        llmConfig
 	lastModelName string
-	loraNames     []string
-	args          any
 	sq            *servicequeue.ServiceQueue
 	wd            *watchdog.Watchdog
+}
+
+type llmConfig struct {
+	Models      map[string]llmArgs `json:"models"`
+	DefaultName string             `json:"default_name"`
+}
+
+type llmArgs struct {
+	NCtx        *uint   `json:"n_ctx"`
+	NGpuLayers  *uint   `json:"n-gpu-layers"`
+	FlashAttn   *bool   `json:"flash_attn"`
+	Tensorcores *bool   `json:"tensorcores"`
+	CfgCache    *bool   `json:"cfg_cache"`
+	Cache4bit   *bool   `json:"cache_4bit"`
+	Loader      *string `json:"loader"`
 }
 
 type TBody map[string]any
@@ -66,10 +81,14 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog
 				F: func() {
 					result.unload()
 					result.lastModelName = ""
+					time.Sleep(time.Second * 2)
 				},
 				Service: servicequeue.LLM,
 			}
-			result.ensureLoaded(c)
+			err := result.ensureLoaded(c)
+			if err != nil {
+				log.Printf("Error loading model: %s", err)
+			}
 		},
 		After: sq.ServiceCloser(servicequeue.LLM, func(path string) bool {
 			return path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode"
@@ -96,7 +115,7 @@ func (l *llmbalancer) ensureLoaded(c echo.Context) error {
 	if c.Request().RequestURI == "/v1/internal/encode" && l.lastModelName != "" {
 		return nil
 	}
-	modelName := l.modelName
+	modelName := "default"
 	bodyBytes, err := io.ReadAll(c.Request().Body)
 	if err != nil {
 		return err
@@ -110,12 +129,19 @@ func (l *llmbalancer) ensureLoaded(c echo.Context) error {
 	if model, ok := body["model"].(string); ok && model != "" {
 		modelName = model
 	}
+	args, ok := l.config.Models[modelName]
+	if !ok {
+		return fmt.Errorf("undefined model %s", modelName)
+	}
+	if modelName == "default" {
+		modelName = l.config.DefaultName
+	}
 	if l.lastModelName == modelName {
 		return nil
 	} else {
 		log.Printf("Last loaded model is '%s', requested '%s', reloading...", l.lastModelName, modelName)
 	}
-	resp, err := l.post("/v1/internal/model/load", TBody{"model_name": modelName, "args": l.args})
+	resp, err := l.post("/v1/internal/model/load", TBody{"model_name": modelName, "args": args})
 	if err != nil {
 		log.Printf("Error loading model: %s", err)
 		return err
@@ -126,17 +152,6 @@ func (l *llmbalancer) ensureLoaded(c echo.Context) error {
 	}
 	log.Print("Model loaded")
 	l.lastModelName = modelName
-	if len(l.loraNames) > 0 {
-		resp, err = l.post("/v1/internal/lora/load", TBody{"lora_names": l.loraNames})
-		if err != nil {
-			log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), err)
-			return err
-		}
-		if err, ok := resp["error"]; ok {
-			log.Printf("Error loading loras %s: %s", strings.Join(l.loraNames, ", "), resp)
-			return fmt.Errorf("%s", err)
-		}
-	}
 	return nil
 }
 
@@ -157,4 +172,28 @@ func (l *llmbalancer) handleModels(c echo.Context) error {
 
 func (l *llmbalancer) forbidden(c echo.Context) error {
 	return JSONErrorMessage(c, 403, "forbidden")
+}
+
+func (l *llmbalancer) loadConfig(filename string) error {
+	f, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	err = json.NewDecoder(f).Decode(&l.config)
+	if err != nil {
+		return err
+	}
+	for k, v := range l.config.Models {
+		if k == "default" {
+			continue
+		}
+		def := l.config.Models["default"]
+		err = mergo.Merge(&def, v, mergo.WithOverride, mergo.WithoutDereference)
+		if err != nil {
+			return err
+		}
+		l.config.Models[k] = def
+	}
+	return nil
 }

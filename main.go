@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"math/rand"
 	"net/http"
@@ -18,28 +17,24 @@ import (
 	"github.com/rkfg/authproxy/metrics"
 	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/servicequeue"
-	"github.com/rkfg/authproxy/upload"
 	"github.com/rkfg/authproxy/watchdog"
 	"golang.org/x/crypto/bcrypt"
 )
 
 var params struct {
-	CredFilename string   `short:"f" description:"Credentials filename" required:"true"`
-	AddUser      bool     `short:"a" description:"Add new user"`
-	Username     string   `short:"u" description:"Username for -a"`
-	Password     string   `short:"p" description:"Password for -a"`
-	TargetURL    string   `short:"t" description:"Target URL to proxy to"`
-	LLMURL       string   `long:"llm-url" description:"Target LLM URL to proxy to"`
-	TTSURL       string   `long:"tts-url" description:"TTS URL"`
-	CUIURL       string   `long:"cui-url" description:"ComfyUI URL to proxy to"`
-	Address      string   `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
-	LLMModel     string   `long:"llm-model" description:"LLM model to autoload"`
-	LLMArgs      string   `long:"llm-args" description:"JSON-formatted parameters to load the model"`
-	LLMLoras     []string `long:"llm-lora" description:"LLM loras to autoload"`
-	LoRAPath     string   `long:"lora-path" description:"Path to the directory for LoRA uploads"`
-	SDHost       string   `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
-	SDTimeout    int      `long:"sd-timeout" description:"SD task timeout in seconds" default:"300"`
-	FIFOPath     string   `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
+	CredFilename string `short:"f" description:"Credentials filename" required:"true"`
+	AddUser      bool   `short:"a" description:"Add new user"`
+	Username     string `short:"u" description:"Username for -a"`
+	Password     string `short:"p" description:"Password for -a"`
+	TargetURL    string `short:"t" description:"Target URL to proxy to"`
+	LLMURL       string `long:"llm-url" description:"Target LLM URL to proxy to"`
+	TTSURL       string `long:"tts-url" description:"TTS URL"`
+	CUIURL       string `long:"cui-url" description:"ComfyUI URL to proxy to"`
+	Address      string `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
+	LLMConfig    string `long:"llm-config" description:"LLM config file"`
+	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
+	SDTimeout    int    `long:"sd-timeout" description:"SD task timeout in seconds" default:"300"`
+	FIFOPath     string `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string
 	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
 	PushPassword string `long:"push-password" description:"Password to push prometheus metrics from other services"`
@@ -157,22 +152,20 @@ func main() {
 	e.Group("/sdapi", sdp)
 	addSDQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
-		if params.LLMModel == "" {
-			log.Fatal("Specify the LLM model name")
+		if params.LLMConfig == "" {
+			log.Fatal("Specify the LLM config file name")
 		}
 		llm := NewLLMBalancer(llmurl, sq, wd)
-		llm.modelName = params.LLMModel
-		llm.loraNames = params.LLMLoras
-		json.NewDecoder(strings.NewReader(params.LLMArgs)).Decode(&llm.args)
+		err = llm.loadConfig(params.LLMConfig)
+		if err != nil {
+			log.Fatalf("Error loading LLM config: %s", err)
+		}
 		e.Group("/v1/*", llm.proxy)
 		e.GET("/v1/internal/model/info", llm.handleModel)
 		e.POST("/v1/internal/encode", nil, llm.proxy)
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models", llm.handleModels)
 		e.GET("/v1/models/*", llm.forbidden)
-	}
-	if params.LoRAPath != "" {
-		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker, mchan)
 	}
 	if params.TTSURL != "" {
 		ttsurl, err := url.Parse(params.TTSURL)
