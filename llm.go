@@ -68,7 +68,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog
 	result := llmbalancer{sq: sq, target: target, wd: wd}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
 		Before: func(c echo.Context) {
-			log.Printf("Req: %s %s", c.Request().Method, c.Request().URL.String())
+			log.Printf("LLM Req: %s %s", c.Request().Method, c.Request().URL.String())
 			path := c.Request().URL.Path
 			method := c.Request().Method
 			if method != "POST" || path != "/v1/chat/completions" && path != "/v1/completions" && path != "/v1/internal/encode" {
@@ -76,7 +76,8 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog
 			}
 			sq.Lock()
 			defer sq.Unlock()
-			sq.Await(servicequeue.LLM)
+			log.Print("LLM sq locked, waiting...")
+			sq.Await(servicequeue.LLM, false) // wait until there are no tasks to prevent concurrent model loading
 			sq.CF = &servicequeue.CleanupFunc{
 				F: func() {
 					result.unload()
@@ -85,7 +86,9 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog
 				},
 				Service: servicequeue.LLM,
 			}
+			log.Print("Ensuring the model is loaded")
 			err := result.ensureLoaded(c)
+			log.Print("Proceeding")
 			if err != nil {
 				log.Printf("Error loading model: %s", err)
 			}
@@ -141,14 +144,20 @@ func (l *llmbalancer) ensureLoaded(c echo.Context) error {
 	} else {
 		log.Printf("Last loaded model is '%s', requested '%s', reloading...", l.lastModelName, modelName)
 	}
-	resp, err := l.post("/v1/internal/model/load", TBody{"model_name": modelName, "args": args})
-	if err != nil {
-		log.Printf("Error loading model: %s", err)
-		return err
-	}
-	if err, ok := resp["error"]; ok {
-		log.Printf("Error loading model: %s", resp)
-		return fmt.Errorf("%s", err)
+	l.unload()
+	var resp TBody
+	for retries := 0; retries < 10; retries += 1 {
+		time.Sleep(time.Second * 1)
+		resp, err = l.post("/v1/internal/model/load", TBody{"model_name": modelName, "args": args})
+		if err != nil {
+			log.Printf("Error loading model: %s", err)
+			continue
+		}
+		if _, ok := resp["error"]; ok {
+			log.Printf("Error loading model: %s", resp)
+			continue
+		}
+		break
 	}
 	log.Print("Model loaded")
 	l.lastModelName = modelName

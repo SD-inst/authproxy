@@ -17,6 +17,7 @@ import (
 	"github.com/rkfg/authproxy/metrics"
 	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/servicequeue"
+	"github.com/rkfg/authproxy/upload"
 	"github.com/rkfg/authproxy/watchdog"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -32,6 +33,7 @@ var params struct {
 	CUIURL       string `long:"cui-url" description:"ComfyUI URL to proxy to"`
 	Address      string `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
 	LLMConfig    string `long:"llm-config" description:"LLM config file"`
+	LoRAPath     string `long:"lora-path" description:"Path to the directory for LoRA uploads"`
 	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
 	SDTimeout    int    `long:"sd-timeout" description:"SD task timeout in seconds" default:"300"`
 	FIFOPath     string `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
@@ -166,6 +168,9 @@ func main() {
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models", llm.handleModels)
 		e.GET("/v1/models/*", llm.forbidden)
+	}
+	if params.LoRAPath != "" {
+		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker, mchan)
 	}
 	if params.TTSURL != "" {
 		ttsurl, err := url.Parse(params.TTSURL)

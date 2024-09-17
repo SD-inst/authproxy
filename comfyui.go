@@ -19,7 +19,7 @@ func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL
 	e.POST("/cui/join", func(c echo.Context) error {
 		sq.Lock()
 		defer sq.Unlock()
-		sq.Await(servicequeue.CUI)
+		sq.AwaitReent(servicequeue.CUI)
 		sq.CF = &servicequeue.CleanupFunc{
 			F: func() {
 				http.Post(cuiurl.String()+"/free", echo.MIMEApplicationJSON, bytes.NewBufferString(`{"unload_models":"true","free_memory":"true"}`))
@@ -30,7 +30,7 @@ func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL
 	})
 	e.POST("/cui/leave", func(c echo.Context) error {
 		sq.Lock()
-		sq.Await(servicequeue.CUI)
+		sq.AwaitReent(servicequeue.CUI)
 		sq.SetCleanup(time.Second * 3)
 		sq.Unlock()
 		return nil

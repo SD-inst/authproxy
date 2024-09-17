@@ -56,14 +56,19 @@ func NewServiceQueue(svcChan chan<- SvcType) *ServiceQueue {
 }
 
 // caller should lock and unlock sq, returns true if service has been changed or false if it was the same
-func (sq *ServiceQueue) Await(t SvcType) bool {
-	sq.AwaitCheck(t)
-	if sq.service == t {
+func (sq *ServiceQueue) AwaitReent(t SvcType) bool {
+	return sq.Await(t, true)
+}
+
+// allowReent finishes waiting if the service is already t, otherwise it waits for NONE
+func (sq *ServiceQueue) Await(t SvcType, allowReent bool) bool {
+	sq.AwaitCheck(t, allowReent)
+	if sq.service == t { // shouldn't happen if allowReent is false
 		log.Printf("*** Service is already %v, proceeding ***", t)
 		sq.CancelCleanup()
 		return false
 	}
-	log.Printf("*** Service is %v, changing ***", sq.service)
+	log.Printf("*** Service is %v, changing to %v ***", sq.service, t)
 	sq.SetService(t)
 	if sq.CF != nil && sq.CF.F != nil && sq.CF.Service != t {
 		log.Printf("*** Running cleanup func ***")
@@ -73,9 +78,9 @@ func (sq *ServiceQueue) Await(t SvcType) bool {
 	return true
 }
 
-func (sq *ServiceQueue) AwaitCheck(t SvcType) {
-	for sq.service != t && sq.service != NONE {
-		log.Printf("*** Waiting for service %v, have %v ***", t, sq.service)
+func (sq *ServiceQueue) AwaitCheck(t SvcType, allowReent bool) {
+	for (sq.service != t || !allowReent) && sq.service != NONE {
+		log.Printf("*** Waiting for service %v, have %v [reent: %t] ***", t, sq.service, allowReent)
 		sq.cv.Wait()
 	}
 }
@@ -111,7 +116,7 @@ func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) b
 		}
 		log.Printf("*** Setting closer for %s, %s ***", path, timeout)
 		sq.Lock()
-		sq.Await(t)
+		sq.AwaitReent(t)
 		log.Printf("*** Closer wait for %s is over ***", path)
 		if closeOnBody {
 			if resp != nil {

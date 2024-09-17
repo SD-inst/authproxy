@@ -23,7 +23,7 @@ func addSDQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	sq.CF = cleanupFunc // SD is supposed to be active by default
 	e.POST("/internal/join", func(c echo.Context) error {
 		sq.Lock()
-		if sq.Await(servicequeue.SD) {
+		if sq.AwaitReent(servicequeue.SD) {
 			post("/sdapi/v1/reload-checkpoint")
 		}
 		sq.CF = cleanupFunc
@@ -32,7 +32,7 @@ func addSDQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	})
 	e.POST("/internal/leave", func(c echo.Context) error {
 		sq.Lock()
-		sq.Await(servicequeue.SD)
+		sq.AwaitReent(servicequeue.SD)
 		sq.SetCleanup(time.Second * 7)
 		sq.Unlock()
 		return nil

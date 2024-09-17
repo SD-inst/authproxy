@@ -17,7 +17,7 @@ func newTTSProxy(ttsurl *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog.Wa
 			if c.Request().Method == "POST" && path == "/api/generate" || path == "/api/rvc" {
 				sq.Lock()
 				defer sq.Unlock()
-				sq.Await(servicequeue.TTS)
+				sq.AwaitReent(servicequeue.TTS)
 				sq.CF = &servicequeue.CleanupFunc{
 					F: func() {
 						wd.Send("restart tts")
