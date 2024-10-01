@@ -62,6 +62,7 @@ func parseBody(resp io.ReadCloser) (TBody, error) {
 func (l *llmbalancer) unload() {
 	log.Printf("Cleanup, restarting the LLM backend")
 	l.wd.Send("restart text-generation-webui")
+	l.lastModelName = ""
 }
 
 func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog.Watchdog) *llmbalancer {
@@ -81,7 +82,6 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog
 			sq.CF = &servicequeue.CleanupFunc{
 				F: func() {
 					result.unload()
-					result.lastModelName = ""
 					time.Sleep(time.Second * 2)
 				},
 				Service: servicequeue.LLM,
@@ -144,7 +144,9 @@ func (l *llmbalancer) ensureLoaded(c echo.Context) error {
 	} else {
 		log.Printf("Last loaded model is '%s', requested '%s', reloading...", l.lastModelName, modelName)
 	}
-	l.unload()
+	if l.lastModelName != "" { // only unload if a model is already loadad
+		l.unload()
+	}
 	var resp TBody
 	for retries := 0; retries < 10; retries += 1 {
 		time.Sleep(time.Second * 1)
