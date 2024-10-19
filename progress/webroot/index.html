@@ -104,6 +104,8 @@
                             const prevService = service_str(data.prev_service);
                             const service = prevService ? `${curService} ⇐ ${prevService}` : curService;
                             document.getElementById('service').innerText = service;
+                            document.getElementById('last_active').innerText =
+                                new Date(data.last_active).toLocaleString();
                     }
                 };
             }
