@@ -31,5 +31,6 @@ type UsersUpdate struct {
 }
 
 type ServiceUpdate struct {
-	Service servicequeue.SvcType `json:"service"`
+	Service     servicequeue.SvcType `json:"service"`
+	PrevService servicequeue.SvcType `json:"prev_service"`
 }

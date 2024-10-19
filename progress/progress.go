@@ -147,17 +147,14 @@ func (p *progress) gpuStatus() {
 func (p *progress) serviceUpdater() {
 	for svc := range p.svcChan {
 		resp := p.b.State(events.SERVICE_UPDATE)
-		desc := ""
+		event := events.ServiceUpdate{Service: svc}
 		if p, ok := resp.(events.Packet); ok && p.Type == events.SERVICE_UPDATE {
 			prevSvc := p.Data.(events.ServiceUpdate)
 			if prevSvc.Service != svc {
-				desc = fmt.Sprintf("Service switch from %s to %s", prevSvc.Service, svc)
+				event.PrevService = prevSvc.Service
 			}
 		}
-		p.b.Broadcast(events.Packet{Type: events.SERVICE_UPDATE, Data: events.ServiceUpdate{
-			Service: svc,
-		}})
-		p.b.Broadcast(events.Packet{Type: events.PROGRESS_UPDATE, Data: ProgressUpdate{LastActive: time.Now(), Description: desc}})
+		p.b.Broadcast(events.Packet{Type: events.SERVICE_UPDATE, Data: event})
 	}
 }
 

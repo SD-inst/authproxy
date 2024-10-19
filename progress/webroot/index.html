@@ -17,6 +17,22 @@
         <script>
             const host = location.href.replace('http', 'ws');
             const apiUrl = host + (host.endsWith('/') ? '' : '/') + 'ws';
+            function service_str(s) {
+                switch (s) {
+                    case 0:
+                        return 'NONE';
+                    case 1:
+                        return 'A1111';
+                    case 2:
+                        return 'LLM';
+                    case 3:
+                        return 'TTS';
+                    case 4:
+                        return 'CUI';
+                    default:
+                        return 'UNKNOWN';
+                }
+            }
             function init(ws) {
                 ws.onopen = () => {
                     console.log('Connected!');
@@ -84,26 +100,9 @@
                             ).innerText = `Total: ${data.total} MB`;
                             break;
                         case 'service':
-                            let service = '';
-                            switch (data.service) {
-                                case 0:
-                                    service = 'NONE'
-                                    break;
-                                case 1:
-                                    service = 'A1111'
-                                    break;
-                                case 2:
-                                    service = 'LLM'
-                                    break;
-                                case 3:
-                                    service = 'TTS'
-                                    break;
-                                case 4:
-                                    service = 'CUI'
-                                    break;
-                                default:
-                                    break;
-                            }
+                            const curService = service_str(data.service);
+                            const prevService = service_str(data.prev_service);
+                            const service = prevService ? `${curService} ⇐ ${prevService}` : curService;
                             document.getElementById('service').innerText = service;
                     }
                 };
