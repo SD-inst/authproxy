@@ -129,6 +129,10 @@ func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) b
 				}}
 			} else {
 				log.Printf("*** No response set ***")
+				sq.CancelCleanup()
+				sq.SetService(NONE)
+				sq.Unlock()
+				return nil
 			}
 		}
 		sq.SetCleanup(timeout)
