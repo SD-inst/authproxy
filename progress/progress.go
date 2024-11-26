@@ -184,7 +184,7 @@ func (p *progress) handleCUIProgress(c echo.Context) error {
 		Job   string  `json:"prompt_id"`
 	}
 	c.Bind(&params)
-	p.pchan <- sdprogress{Progress: params.Value / params.Max, QueueSize: params.Queue, State: sdprogressState{Job: &params.Job, SamplingSteps: int(params.Max), SamplingStep: int(params.Value)}}
+	p.pchan <- sdprogress{Progress: params.Value / params.Max, QueueSize: params.Queue - 1, State: sdprogressState{Job: &params.Job, SamplingSteps: int(params.Max), SamplingStep: int(params.Value), JobCount: 1}}
 	return nil
 }
 
