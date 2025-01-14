@@ -51,7 +51,11 @@ func loginPageHandler(c echo.Context) error {
 
 func failLogin(c echo.Context, username string) error {
 	log.Printf("User \"%s\" failed to login", username)
-	return c.Redirect(302, "/login")
+	q := c.FormValue("return")
+	if q != "" {
+		q = "?return=" + url.QueryEscape(q)
+	}
+	return c.Redirect(302, "/login"+q)
 }
 
 func setToken(c echo.Context, subject string) error {
