@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -40,6 +42,7 @@ var params struct {
 	JWTSecret    string
 	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
 	PushPassword string `long:"push-password" description:"Password to push prometheus metrics from other services"`
+	StaticPath   string `long:"static-path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
 }
 
 var skipAuth = map[string][]string{
@@ -186,6 +189,18 @@ func main() {
 		}
 		addCUIHandlers(e, sq, cuiurl)
 		e.Group("/cui/*", middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
+	}
+	if params.StaticPath != "" {
+		dirs, err := os.ReadDir(params.StaticPath)
+		if err != nil {
+			log.Fatalf("Error reading static directory %s: %s", params.StaticPath, err)
+		}
+		for _, d := range dirs {
+			if !d.IsDir() {
+				continue
+			}
+			e.Group("/"+d.Name(), earlyCheckMiddleware(), middleware.Static(filepath.Join(params.StaticPath, d.Name())))
+		}
 	}
 	e.Start(params.Address)
 }
