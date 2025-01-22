@@ -199,7 +199,9 @@ func main() {
 			if !d.IsDir() {
 				continue
 			}
-			e.Group("/"+d.Name(), earlyCheckMiddleware(), middleware.Static(filepath.Join(params.StaticPath, d.Name())))
+			e.Group("/"+d.Name(), earlyCheckMiddleware(), middleware.AddTrailingSlashWithConfig(middleware.TrailingSlashConfig{RedirectCode: 302, Skipper: func(c echo.Context) bool {
+				return c.Path() != "/"+d.Name()
+			}}), middleware.Static(filepath.Join(params.StaticPath, d.Name())))
 		}
 	}
 	e.Start(params.Address)
