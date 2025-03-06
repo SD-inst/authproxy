@@ -50,7 +50,7 @@ func loginPageHandler(c echo.Context) error {
 }
 
 func failLogin(c echo.Context, username string) error {
-	log.Printf("User \"%s\" failed to login", username)
+	log.Printf("%s User \"%s\" failed to login", c.RealIP(), username)
 	q := c.FormValue("return")
 	if q != "" {
 		q = "?return=" + url.QueryEscape(q)
@@ -143,7 +143,7 @@ func randomString(r *rand.Rand, length int) string {
 }
 
 func keyErrorHandler(c echo.Context, err error) error {
-	log.Print(err)
+	log.Printf("%s Access denied: %s", c.RealIP(), err)
 	return c.Redirect(302, "/login?return="+url.QueryEscape(c.Request().RequestURI))
 }
 
@@ -172,7 +172,7 @@ func earlyCheckMiddleware() echo.MiddlewareFunc {
 						if err != nil {
 							return JSONError(c, 400, err)
 						}
-						log.Printf("Token renewed for user %s", subject)
+						log.Printf("%s Token renewed for user %s", c.RealIP(), subject)
 					}
 				}
 			}
