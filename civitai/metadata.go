@@ -16,7 +16,8 @@ import (
 )
 
 type Downloader struct {
-	c *http.Client
+	c               *http.Client
+	PreviewCopyPath string
 }
 
 func NewDownloader() (result *Downloader) {
@@ -30,6 +31,30 @@ func exists(filename string) bool {
 	return !os.IsNotExist(err)
 }
 
+func CopyLink(src string, dst string) error {
+	err := os.Remove(dst)
+	if err != nil {
+		fmt.Printf("Removing %s failed: %s\n", dst, err)
+	}
+	err = os.Link(src, dst)
+	if err == nil {
+		return nil
+	}
+	fmt.Printf("Linking %s to %s failed: %s\n", src, dst, err)
+	sf, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer sf.Close()
+	tf, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer tf.Close()
+	_, err = io.Copy(tf, sf)
+	return err
+}
+
 func (d *Downloader) UpdateFile(filename string) error {
 	oldumask := syscall.Umask(0111)
 	defer syscall.Umask(oldumask)
@@ -38,9 +63,10 @@ func (d *Downloader) UpdateFile(filename string) error {
 		return fmt.Errorf("invalid extension")
 	}
 	filebase := filename[:len(filename)-len(ext)]
-	preview := filebase + ".preview.png"
+	preview_img := filebase + ".preview.png"
+	preview_vid := filebase + ".preview.mp4"
 	jsonfilename := filebase + ".json"
-	if exists(preview) || exists(jsonfilename) {
+	if exists(preview_img) || exists(preview_vid) || exists(jsonfilename) {
 		return nil
 	}
 	modelfile, err := os.Open(filename)
@@ -104,20 +130,25 @@ func (d *Downloader) UpdateFile(filename string) error {
 	}
 
 	for _, img := range civitaiMetadata.Images {
-		if img.Type == "image" {
+		if img.Type == "image" || img.Type == "video" {
 			resp, err = d.c.Get(img.URL)
 			if err != nil {
 				return err
 			}
-			previewfile, err := os.Create(preview)
+			preview_name := preview_img
+			if img.Type == "video" {
+				preview_name = preview_vid
+			}
+			previewfile, err := os.Create(preview_name)
 			if err != nil {
 				return err
 			}
-			defer previewfile.Close()
 			_, err = io.Copy(previewfile, resp.Body)
 			if err != nil {
+				previewfile.Close()
 				return err
 			}
+			previewfile.Close()
 			break
 		}
 	}
