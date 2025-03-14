@@ -143,7 +143,7 @@ func randomString(r *rand.Rand, length int) string {
 }
 
 func keyErrorHandler(c echo.Context, err error) error {
-	log.Printf("%s Access denied: %s", c.RealIP(), err)
+	log.Printf("%s %s %s Access denied: %s | %s", c.RealIP(), c.Request().Method, c.Request().RequestURI, err, c.Request().UserAgent())
 	return c.Redirect(302, "/login?return="+url.QueryEscape(c.Request().RequestURI))
 }
 
