@@ -102,8 +102,9 @@
                         case 'service':
                             const curService = service_str(data.service);
                             const prevService = service_str(data.prev_service);
+                            const serviceQueue = data.service_queue;
                             const service = prevService ? `${curService} ⇐ ${prevService}` : curService;
-                            document.getElementById('service').innerText = service;
+                            document.getElementById('service').innerText = service + (serviceQueue ? ` [queue: ${serviceQueue}]` : '');
                             document.getElementById('last_active').innerText =
                                 new Date(data.last_active).toLocaleString();
                     }

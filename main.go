@@ -139,7 +139,7 @@ func main() {
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
 	wd := watchdog.NewWatchdog(params.FIFOPath)
-	svcChan := make(chan servicequeue.SvcType)
+	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)
 	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan, svcChan)
 	pr.AddHandlers(e)

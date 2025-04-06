@@ -61,11 +61,11 @@ type progress struct {
 	wd      *watchdog.Watchdog
 	timeout time.Duration
 	m       chan<- metrics.MetricUpdate
-	svcChan <-chan servicequeue.SvcType
+	svcChan <-chan servicequeue.SvcUpdate
 	pchan   chan sdprogress
 }
 
-func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcType) *progress {
+func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate) *progress {
 	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100)}
 }
 
@@ -147,10 +147,14 @@ func (p *progress) gpuStatus() {
 func (p *progress) serviceUpdater() {
 	for svc := range p.svcChan {
 		resp := p.b.State(events.SERVICE_UPDATE)
-		event := events.ServiceUpdate{Service: svc, LastActive: time.Now()}
+		event := events.ServiceUpdate{Service: svc.Type, LastActive: time.Now(), Queue: svc.Queue}
 		if p, ok := resp.(events.Packet); ok && p.Type == events.SERVICE_UPDATE {
 			prevSvc := p.Data.(events.ServiceUpdate)
-			if prevSvc.Service != svc {
+			if svc.Type == servicequeue.IGNORE {
+				event.Service = prevSvc.Service
+				svc.Type = prevSvc.Service
+			}
+			if prevSvc.Service != svc.Type {
 				event.PrevService = prevSvc.Service
 			}
 		}
@@ -163,7 +167,7 @@ func (p *progress) sdQuery(sq *servicequeue.ServiceQueue) {
 	for {
 		time.Sleep(time.Second)
 		sq.Lock()
-		sq.AwaitCheck(servicequeue.SD, true)
+		sq.AwaitCheck(servicequeue.SD, true, false)
 		sq.Unlock()
 		resp, err := client.Get(p.sdhost + "/sdapi/v1/progress")
 		if err != nil {

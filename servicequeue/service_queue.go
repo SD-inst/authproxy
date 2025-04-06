@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,7 @@ const (
 	LLM
 	TTS
 	CUI
+	IGNORE = 999
 )
 
 func (s SvcType) String() string {
@@ -39,16 +41,22 @@ type CleanupFunc struct {
 	Service SvcType
 }
 
+type SvcUpdate struct {
+	Type  SvcType
+	Queue int32
+}
+
 type ServiceQueue struct {
 	sync.Mutex
 	cv           *sync.Cond
 	cleanupTimer *time.Timer
 	service      SvcType
 	CF           *CleanupFunc // executes after await if service changed
-	svcChan      chan<- SvcType
+	svcChan      chan<- SvcUpdate
+	waitqueue    atomic.Int32
 }
 
-func NewServiceQueue(svcChan chan<- SvcType) *ServiceQueue {
+func NewServiceQueue(svcChan chan<- SvcUpdate) *ServiceQueue {
 	result := ServiceQueue{service: NONE}
 	result.cv = sync.NewCond(&result)
 	result.svcChan = svcChan
@@ -62,7 +70,7 @@ func (sq *ServiceQueue) AwaitReent(t SvcType) bool {
 
 // allowReent finishes waiting if the service is already t, otherwise it waits for NONE
 func (sq *ServiceQueue) Await(t SvcType, allowReent bool) bool {
-	sq.AwaitCheck(t, allowReent)
+	sq.AwaitCheck(t, allowReent, true)
 	if sq.service == t { // shouldn't happen if allowReent is false
 		log.Printf("*** Service is already %v, proceeding ***", t)
 		sq.CancelCleanup()
@@ -78,7 +86,33 @@ func (sq *ServiceQueue) Await(t SvcType, allowReent bool) bool {
 	return true
 }
 
-func (sq *ServiceQueue) AwaitCheck(t SvcType, allowReent bool) {
+func (sq *ServiceQueue) maybeUpdateQueue(ql int32) <-chan bool {
+	sent := make(chan bool)
+	go func() {
+		time.After(time.Second)
+		ql2 := sq.waitqueue.Load()
+		if ql == ql2 {
+			sq.svcChan <- SvcUpdate{Type: IGNORE, Queue: ql}
+			sent <- true
+		} else {
+			sent <- false
+		}
+	}()
+	return sent
+}
+
+func (sq *ServiceQueue) AwaitCheck(t SvcType, allowReent bool, queueUp bool) {
+	if queueUp {
+		sentChan := sq.maybeUpdateQueue(sq.waitqueue.Add(1))
+		defer func() {
+			ql := sq.waitqueue.Add(-1)
+			go func() {
+				if sent := <-sentChan; sent {
+					sq.maybeUpdateQueue(ql)
+				}
+			}()
+		}()
+	}
 	for (sq.service != t || !allowReent) && sq.service != NONE {
 		log.Printf("*** Waiting for service %v, have %v [reent: %t] ***", t, sq.service, allowReent)
 		sq.cv.Wait()
@@ -105,7 +139,7 @@ func (sq *ServiceQueue) SetService(s SvcType) {
 	log.Printf("*** Setting service to %v ***", s)
 	sq.service = s
 	sq.cv.Broadcast()
-	sq.svcChan <- s
+	sq.svcChan <- SvcUpdate{Type: s, Queue: sq.waitqueue.Load()}
 }
 
 func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {
