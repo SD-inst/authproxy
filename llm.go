@@ -171,14 +171,19 @@ func (l *llmbalancer) handleModel(c echo.Context) error {
 }
 
 func (l *llmbalancer) handleModels(c echo.Context) error {
-	return c.JSON(200, TBody{
-		"object": "list",
-		"data": []map[string]any{{
-			"id":       l.modelName,
+	data := []map[string]any{}
+	for k := range l.config.Models {
+		data = append(data, map[string]any{
+			"id":       k,
 			"object":   "model",
 			"created":  0,
 			"owned_by": "user",
-		}}})
+		})
+	}
+	return c.JSON(200, TBody{
+		"object": "list",
+		"data":   data,
+	})
 }
 
 func (l *llmbalancer) forbidden(c echo.Context) error {
