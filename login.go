@@ -46,7 +46,15 @@ func JSONErrorMessage(c echo.Context, code int, msg string) error {
 }
 
 func loginPageHandler(c echo.Context) error {
-	return tpl.Execute(c.Response(), struct{ ReturnTo string }{ReturnTo: c.QueryParam("return")})
+	returnTo := c.QueryParam("return")
+	cookie, err := c.Cookie(cookieName)
+	if err != nil || cookie.Value == "" {
+		return tpl.Execute(c.Response(), struct{ ReturnTo string }{ReturnTo: returnTo})
+	}
+	if returnTo == "" {
+		returnTo = "/"
+	}
+	return c.Redirect(302, returnTo)
 }
 
 func failLogin(c echo.Context, username string) error {
@@ -65,7 +73,7 @@ func setToken(c echo.Context, subject string) error {
 	if err != nil {
 		return err
 	}
-	c.SetCookie(&http.Cookie{Name: cookieName, Value: signed, HttpOnly: true, SameSite: http.SameSiteLaxMode, Expires: expiration})
+	c.SetCookie(&http.Cookie{Name: cookieName, Value: signed, HttpOnly: true, Path: "/", SameSite: http.SameSiteLaxMode, Expires: expiration})
 	return nil
 }
 
@@ -144,13 +152,14 @@ func randomString(r *rand.Rand, length int) string {
 
 func keyErrorHandler(c echo.Context, err error) error {
 	log.Printf("%s %s %s Access denied: %s | %s", c.RealIP(), c.Request().Method, c.Request().RequestURI, err, c.Request().UserAgent())
+	c.SetCookie(&http.Cookie{Name: cookieName, MaxAge: -1, HttpOnly: true, Path: "/", SameSite: http.SameSiteLaxMode})
 	return c.Redirect(302, "/login?return="+url.QueryEscape(c.Request().RequestURI))
 }
 
-func earlyCheckMiddleware() echo.MiddlewareFunc {
+func earlyCheckMiddleware(path string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			if c.Request().URL != nil && c.Request().URL.Path == "/" {
+			if c.Request().URL != nil && c.Request().URL.Path == path {
 				token := c.Get("user").(*jwt.Token)
 				if token != nil {
 					date, err := token.Claims.GetExpirationTime()

@@ -153,7 +153,7 @@ func main() {
 		log.Fatal(err)
 	}
 	sdp := newSDProxy(tgturl)
-	e.Group("/*", earlyCheckMiddleware(), sdp)
+	e.Group("/*", earlyCheckMiddleware("/"), sdp)
 	e.Group("/sdapi", sdp)
 	addSDQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
@@ -180,7 +180,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error parsing TTS URL: %s", err)
 		}
-		e.Group("/tts/*", middleware.Rewrite(map[string]string{"/tts/*": "/$1"}), newTTSProxy(ttsurl, sq, wd))
+		e.Group("/tts/*", earlyCheckMiddleware("/tts/"), middleware.Rewrite(map[string]string{"/tts/*": "/$1"}), newTTSProxy(ttsurl, sq, wd))
 	}
 	if params.CUIURL != "" {
 		cuiurl, err := url.Parse(params.CUIURL)
@@ -188,7 +188,7 @@ func main() {
 			log.Fatalf("Error parsing CUI URL: %s", err)
 		}
 		addCUIHandlers(e, sq, cuiurl)
-		e.Group("/cui/*", middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
+		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	if params.StaticPath != "" {
 		dirs, err := os.ReadDir(params.StaticPath)
@@ -200,7 +200,7 @@ func main() {
 				continue
 			}
 			dirname := d.Name()
-			e.Group("/"+dirname, earlyCheckMiddleware(), middleware.AddTrailingSlashWithConfig(middleware.TrailingSlashConfig{RedirectCode: 302, Skipper: func(c echo.Context) bool {
+			e.Group("/"+dirname, earlyCheckMiddleware("/"+dirname+"/"), middleware.AddTrailingSlashWithConfig(middleware.TrailingSlashConfig{RedirectCode: 302, Skipper: func(c echo.Context) bool {
 				return c.Path() != "/"+dirname
 			}}), middleware.Static(filepath.Join(params.StaticPath, dirname)))
 		}
