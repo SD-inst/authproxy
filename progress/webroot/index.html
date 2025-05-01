@@ -17,6 +17,7 @@
         <script>
             const host = location.href.replace('http', 'ws');
             const apiUrl = host + (host.endsWith('/') ? '' : '/') + 'ws';
+            const appname = 'SD queue monitor';
             function service_str(s) {
                 switch (s) {
                     case 0:
@@ -46,6 +47,24 @@
                         init(new WebSocket(ws.url));
                     }, 1000);
                 };
+                let progress = {
+                    progress: 0,
+                    sq: 0,
+                    eta: '',
+                };
+                function updateTitle() {
+                    const sq_str = progress.sq > 0 ? `[sq: ${progress.sq}] ` : ''
+                    if (progress.progress > 0) {
+                        document.title  = `[${Math.floor(
+                            progress.progress * 100
+                        )}% ${sq_str}ETA: ${progress.eta}] ${appname}`;
+                    } else if (progress.sq) {
+                        document.title = `${sq_str} ${appname}`;
+                    }
+                    if (!progress.progress && !progress.sq) {
+                        document.title = appname;
+                    }
+                }
                 ws.onmessage = (ev) => {
                     if (!ev) {
                         return;
@@ -71,13 +90,9 @@
                             document.getElementById('last_active').innerText =
                                 lastActive.toLocaleString();
                             document.getElementById('duration').innerText = data.duration;
-                            if (data.progress > 0) {
-                                document.title = `[${Math.floor(
-                                    data.progress * 100
-                                )}% ETA: ${data.eta}] SD queue monitor`;
-                            } else {
-                                document.title = 'SD queue monitor';
-                            }
+                            progress.progress = data.progress;
+                            progress.eta = data.eta;
+                            updateTitle();
                             break;
                         case 'users':
                             document.getElementById(
@@ -103,6 +118,10 @@
                             const curService = service_str(data.service);
                             const prevService = service_str(data.prev_service);
                             const serviceQueue = data.service_queue;
+                            if (progress.sq !== serviceQueue) {
+                                progress.sq = serviceQueue;
+                                updateTitle();
+                            }
                             const service = prevService ? `${curService} ⇐ ${prevService}` : curService;
                             document.getElementById('service').innerText = service + (serviceQueue ? ` [queue: ${serviceQueue}]` : '');
                             document.getElementById('last_active').innerText =
@@ -111,7 +130,9 @@
                 };
             }
             function start() {
+                console.log('Creating websocket...');
                 const ws = new WebSocket(apiUrl);
+                console.log('Websocket created.');
                 init(ws);
             }
         </script>
