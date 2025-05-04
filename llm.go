@@ -35,8 +35,8 @@ type llmConfig struct {
 }
 
 type llmArgs struct {
-	NCtx        *uint   `json:"n_ctx"`
-	NGpuLayers  *uint   `json:"n-gpu-layers"`
+	CtxSize     *uint   `json:"ctx_size"`
+	NGpuLayers  *uint   `json:"n_gpu_layers"`
 	FlashAttn   *bool   `json:"flash_attn"`
 	Tensorcores *bool   `json:"tensorcores"`
 	CfgCache    *bool   `json:"cfg_cache"`
