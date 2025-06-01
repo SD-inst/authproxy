@@ -18,6 +18,7 @@ import (
 	"github.com/rkfg/authproxy/events"
 	"github.com/rkfg/authproxy/metrics"
 	"github.com/rkfg/authproxy/progress"
+	"github.com/rkfg/authproxy/proxy"
 	"github.com/rkfg/authproxy/servicequeue"
 	"github.com/rkfg/authproxy/upload"
 	"github.com/rkfg/authproxy/watchdog"
@@ -29,7 +30,7 @@ var params struct {
 	AddUser      bool   `short:"a" description:"Add new user"`
 	Username     string `short:"u" description:"Username for -a"`
 	Password     string `short:"p" description:"Password for -a"`
-	TargetURL    string `short:"t" description:"Target URL to proxy to"`
+	Domain       string `short:"d" description:"Main domain"`
 	LLMURL       string `long:"llm-url" description:"Target LLM URL to proxy to"`
 	TTSURL       string `long:"tts-url" description:"TTS URL"`
 	CUIURL       string `long:"cui-url" description:"ComfyUI URL to proxy to"`
@@ -45,9 +46,16 @@ var params struct {
 	StaticPath   string `long:"static-path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
 }
 
+const sdurl = "http://stablediff-cuda:7860"
+
+var domains = map[string]echo.MiddlewareFunc{
+	"":         proxy.NewProxyWrapperStr(sdurl, nil),
+	"acestep.": proxy.NewProxyWrapperStr("http://acestep:7865", nil),
+}
+
 var skipAuth = map[string][]string{
 	"path": {
-		"/login", "/metrics", "/internal/join", "/internal/leave", "/cui/join", "/cui/leave", "/cui/progress",
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep/progress",
 	},
 	"prefix": {
 		"/v1/", "/sdapi/",
@@ -55,7 +63,7 @@ var skipAuth = map[string][]string{
 }
 
 func post(path string) {
-	_, err := http.Post(params.TargetURL+path, "", nil)
+	_, err := http.Post(sdurl+path, "", nil)
 	if err != nil {
 		log.Printf("*** Error calling %s: %s", path, err)
 		return
@@ -85,9 +93,6 @@ func main() {
 		saveCreds(params.CredFilename)
 		log.Printf("User %s added", params.Username)
 		return
-	}
-	if params.TargetURL == "" {
-		log.Fatal("Specify the target URL to proxy requests to (-t http://127.0.0.1...)")
 	}
 	err = loadCreds(params.CredFilename)
 	if err != nil {
@@ -144,18 +149,23 @@ func main() {
 	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan, svcChan)
 	pr.AddHandlers(e)
 	pr.Start(sq)
-	tgturl, err := url.Parse(params.TargetURL)
-	if err != nil {
-		log.Fatal(err)
-	}
 	llmurl, err := url.Parse(params.LLMURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	sdp := newSDProxy(tgturl)
-	e.Group("/*", earlyCheckMiddleware("/"), sdp)
-	e.Group("/sdapi", sdp)
+	e.Group("/*", earlyCheckMiddleware("/"), func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			for d, t := range domains {
+				if c.Request().Host == d+params.Domain {
+					return t(next)(c)
+				}
+			}
+			return domains[""](next)(c)
+		}
+	})
+	e.Group("/sdapi", domains[params.Domain])
 	addSDQueueHandlers(e, sq)
+	addASQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
 		if params.LLMConfig == "" {
 			log.Fatal("Specify the LLM config file name")

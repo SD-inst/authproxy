@@ -25,6 +25,14 @@ func (pw *proxyWrapper) Next(c echo.Context) *middleware.ProxyTarget {
 	return pw.ProxyBalancer.Next(c)
 }
 
+func NewProxyWrapperStr(targetURL string, i *Interceptor) echo.MiddlewareFunc {
+	url, err := url.Parse(targetURL)
+	if err != nil {
+		panic(err)
+	}
+	return NewProxyWrapper(url, i)
+}
+
 func NewProxyWrapper(targetURL *url.URL, i *Interceptor) echo.MiddlewareFunc {
 	return middleware.ProxyWithConfig(middleware.ProxyConfig{
 		Balancer: &proxyWrapper{ProxyBalancer: middleware.NewRoundRobinBalancer([]*middleware.ProxyTarget{

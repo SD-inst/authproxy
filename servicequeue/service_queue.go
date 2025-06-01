@@ -16,6 +16,7 @@ const (
 	LLM
 	TTS
 	CUI
+	ACESTEP
 	IGNORE = 999
 )
 
@@ -31,6 +32,8 @@ func (s SvcType) String() string {
 		return "TTS"
 	case CUI:
 		return "CUI"
+	case ACESTEP:
+		return "ACESTEP"
 	default:
 		return "<unknown>"
 	}
