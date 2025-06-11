@@ -97,16 +97,19 @@ async function load() {
         fileListBody.append(row);
         if (file.type === 'dir') {
             row.innerHTML = `<td colspan="2">
-            <a href='#${currentPath + file.name}'>
+            <a href='#${encodeURI(currentPath + file.name)}'>
                 <img src='images/folder.png' class='icon' />
                 ${file.name}
             </a>
         </td>`;
         } else {
             row.innerHTML += `<td valign="middle">
+            <a href="download/${encodeURIComponent(
+                currentPath.replace(/\/$/, '')
+            )}/${encodeURIComponent(file.name)}.safetensors">
             <span class="filename"><img src="images/file.png" class="icon" /> ${
                 file.name
-            }</span></td>
+            }</span></a></td>
             <td>${new Date(file.timestamp).toLocaleString()}</td>`;
         }
     }

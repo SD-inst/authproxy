@@ -12,6 +12,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 		sq.Lock()
 		sq.AwaitReent(servicequeue.ACESTEP)
 		sq.Unlock()
+		sq.SetCleanup(time.Minute)
 		return nil
 	})
 	e.POST("/acestep/leave", func(c echo.Context) error {

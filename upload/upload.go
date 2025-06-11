@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -402,6 +403,35 @@ func (u *uploader) loadCookies() {
 	u.dlclient.Jar.SetCookies(civiturl, []*http.Cookie{{Name: civitaiToken, Value: string(token)}})
 }
 
+func (u *uploader) downloadFile(c echo.Context) error {
+	file, err := url.PathUnescape(c.Param("file"))
+	if err != nil {
+		log.Printf("Error unescaping path: %s", err)
+		return c.String(400, "Bad request")
+	}
+	if !filepath.IsLocal(file) {
+		return c.String(400, "Bad request")
+	}
+	if filepath.Ext(file) != ".safetensors" {
+		return c.String(400, "Bad request")
+	}
+	f, err := os.Open(filepath.Join(u.root, file))
+	if err != nil {
+		log.Printf("Error opening file: %s", err)
+		return c.String(404, "Not found")
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		log.Printf("Error getting file stat: %s", err)
+		return c.String(500, "Server error")
+	}
+	c.Response().Header().Set(echo.HeaderContentType, "application/octet-stream")
+	c.Response().Header().Set(echo.HeaderContentLength, strconv.FormatInt(fi.Size(), 10))
+	io.Copy(c.Response(), f)
+	return nil
+}
+
 func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *events.Broker, m chan<- metrics.MetricUpdate) *uploader {
 	os.MkdirAll(rootPath, 0755)
 	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile, civitdl: civitai.NewDownloader(), m: m}
@@ -413,6 +443,7 @@ func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *ev
 	api.GET("/stat", result.stat)
 	api.POST("/files", result.postFiles)
 	api.POST("/download", result.download)
+	api.GET("/download/:file", result.downloadFile)
 	go result.startDownloader()
 	return &result
 }
