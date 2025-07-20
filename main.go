@@ -35,7 +35,6 @@ var params struct {
 	TTSURL       string `long:"tts-url" description:"TTS URL"`
 	CUIURL       string `long:"cui-url" description:"ComfyUI URL to proxy to"`
 	Address      string `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
-	LLMConfig    string `long:"llm-config" description:"LLM config file"`
 	LoRAPath     string `long:"lora-path" description:"Path to the directory for LoRA uploads"`
 	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
 	SDTimeout    int    `long:"sd-timeout" description:"SD task timeout in seconds" default:"300"`
@@ -130,9 +129,12 @@ func main() {
 			token := c.Get("user")
 			user := "???"
 			if token != nil {
-				subject, err := token.(*jwt.Token).Claims.GetSubject()
-				if err == nil && subject != "" {
-					user = subject
+				claims := token.(*jwt.Token).Claims
+				if claims != nil {
+					subject, err := claims.GetSubject()
+					if err == nil && subject != "" {
+						user = subject
+					}
 				}
 			}
 			log.Printf("%s %s %s %s %d %d %s", v.RemoteIP, user, v.Method, v.URI, v.Status, v.ResponseSize, v.UserAgent)
@@ -167,19 +169,10 @@ func main() {
 	addSDQueueHandlers(e, sq)
 	addASQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
-		if params.LLMConfig == "" {
-			log.Fatal("Specify the LLM config file name")
-		}
-		llm := NewLLMBalancer(llmurl, sq, wd)
-		err = llm.loadConfig(params.LLMConfig)
-		if err != nil {
-			log.Fatalf("Error loading LLM config: %s", err)
-		}
+		llm := NewLLMBalancer(llmurl, sq)
 		e.Group("/v1/*", llm.proxy)
-		e.GET("/v1/internal/model/info", llm.handleModel)
 		e.POST("/v1/internal/encode", nil, llm.proxy)
 		e.Any("/v1/internal/*", llm.forbidden)
-		e.GET("/v1/models", llm.handleModels)
 		e.GET("/v1/models/*", llm.forbidden)
 	}
 	if params.LoRAPath != "" {
