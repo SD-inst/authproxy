@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/labstack/echo/v4"
@@ -18,6 +19,10 @@ type llmbalancer struct {
 	sq     *servicequeue.ServiceQueue
 }
 
+func isLLMPath(path string) bool {
+	return strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/completions") || strings.HasSuffix(path, "/v1/internal/encode")
+}
+
 func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer {
 	result := llmbalancer{sq: sq, target: target}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
@@ -25,7 +30,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer
 			log.Printf("LLM Req: %s %s", c.Request().Method, c.Request().URL.String())
 			path := c.Request().URL.Path
 			method := c.Request().Method
-			if method != "POST" || path != "/v1/chat/completions" && path != "/v1/completions" && path != "/v1/internal/encode" {
+			if method != "POST" || !isLLMPath(path) {
 				return
 			}
 			sq.Lock()
@@ -40,7 +45,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer
 			}
 		},
 		After: sq.ServiceCloser(servicequeue.LLM, func(path string) bool {
-			return path == "/v1/chat/completions" || path == "/v1/completions" || path == "/v1/internal/encode"
+			return isLLMPath(path)
 		}, time.Second*30, true),
 	})
 	return &result

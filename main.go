@@ -171,6 +171,7 @@ func main() {
 	if llmurl.Scheme != "" {
 		llm := NewLLMBalancer(llmurl, sq)
 		e.Group("/v1/*", llm.proxy)
+		e.Group("/upstream/*", llm.proxy)
 		e.POST("/v1/internal/encode", nil, llm.proxy)
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models/*", llm.forbidden)
