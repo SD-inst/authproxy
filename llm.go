@@ -20,7 +20,7 @@ type llmbalancer struct {
 }
 
 func isLLMPath(path string) bool {
-	return strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/completions") || strings.HasSuffix(path, "/v1/internal/encode")
+	return strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/completions") || strings.HasSuffix(path, "/v1/internal/encode") || strings.HasPrefix(path, "/upstream/")
 }
 
 func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer {
@@ -29,8 +29,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue) *llmbalancer
 		Before: func(c echo.Context) {
 			log.Printf("LLM Req: %s %s", c.Request().Method, c.Request().URL.String())
 			path := c.Request().URL.Path
-			method := c.Request().Method
-			if method != "POST" || !isLLMPath(path) {
+			if !isLLMPath(path) {
 				return
 			}
 			sq.Lock()
