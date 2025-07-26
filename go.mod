@@ -5,8 +5,8 @@ go 1.23.0
 toolchain go1.24.2
 
 require (
-	dario.cat/mergo v1.0.2
 	github.com/btcsuite/go-flags v0.0.0-20150116065318-6c288d648c1c
+	github.com/donovanhide/eventsource v0.0.0-20210830082556-c59027999da0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/gorilla/websocket v1.5.3
@@ -20,7 +20,6 @@ require (
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

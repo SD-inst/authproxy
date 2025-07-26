@@ -169,7 +169,7 @@ func main() {
 	addSDQueueHandlers(e, sq)
 	addASQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
-		llm := NewLLMBalancer(llmurl, sq)
+		llm := NewLLMBalancer(llmurl, sq, mchan)
 		e.Group("/v1/*", llm.proxy)
 		e.Group("/upstream/*", llm.proxy)
 		e.POST("/v1/internal/encode", nil, llm.proxy)
