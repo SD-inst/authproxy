@@ -17,6 +17,7 @@ const (
 	TTS
 	CUI
 	ACESTEP
+	OVI
 	IGNORE = 999
 )
 
@@ -34,6 +35,8 @@ func (s SvcType) String() string {
 		return "CUI"
 	case ACESTEP:
 		return "ACESTEP"
+	case OVI:
+		return "OVI"
 	default:
 		return "<unknown>"
 	}

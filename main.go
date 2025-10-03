@@ -50,11 +50,12 @@ const sdurl = "http://stablediff-cuda:7860"
 var domains = map[string]echo.MiddlewareFunc{
 	"":         proxy.NewProxyWrapperStr(sdurl, nil),
 	"acestep.": proxy.NewProxyWrapperStr("http://acestep:7865", nil),
+	"ovi.":     proxy.NewProxyWrapperStr("http://ovi:7860", nil),
 }
 
 var skipAuth = map[string][]string{
 	"path": {
-		"/login", "/metrics", "/internal/join", "/internal/leave", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep/progress",
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/ovi/join", "/ovi/leave",
 	},
 	"prefix": {
 		"/v1/", "/sdapi/",
@@ -168,6 +169,7 @@ func main() {
 	e.Group("/sdapi", domains[params.Domain])
 	addSDQueueHandlers(e, sq)
 	addASQueueHandlers(e, sq)
+	addOviQueueHandlers(e, sq)
 	if llmurl.Scheme != "" {
 		llm := NewLLMBalancer(llmurl, sq, mchan)
 		e.Group("/v1/*", llm.proxy)
