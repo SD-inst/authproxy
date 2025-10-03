@@ -27,6 +27,7 @@ import (
 
 var params struct {
 	CredFilename string `short:"f" description:"Credentials filename" required:"true"`
+	ACLFilename  string `short:"c" description:"Access control list filename"`
 	AddUser      bool   `short:"a" description:"Add new user"`
 	Username     string `short:"u" description:"Username for -a"`
 	Password     string `short:"p" description:"Password for -a"`
@@ -98,6 +99,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if params.ACLFilename != "" {
+		err = loadACL(params.ACLFilename)
+		if err != nil {
+			log.Fatalf("Error loading ACL from %s: %s", params.ACLFilename, err)
+		}
+	}
 	e := echo.New()
 	mchan := metrics.NewMetrics(e, params.PushPassword)
 	e.Use(echojwt.WithConfig(echojwt.Config{
@@ -142,6 +149,7 @@ func main() {
 			return nil
 		},
 	}))
+	e.Use(aclMiddleware())
 	e.GET("/login", loginPageHandler)
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
