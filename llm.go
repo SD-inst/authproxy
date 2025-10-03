@@ -96,19 +96,21 @@ func (l *llmbalancer) startMetricCollection() {
 			if e.Type != "metrics" {
 				break
 			}
-			m := metricType{}
-			err = json.Unmarshal([]byte(e.Data), &m)
+			marr := []metricType{}
+			err = json.Unmarshal([]byte(e.Data), &marr)
 			if err != nil {
 				log.Printf("Error unmarshalling metric: %s; error: %s", e.Data, err)
 				break
 			}
-			ts, err := time.Parse(time.RFC3339Nano, m.Timestamp)
-			if err != nil {
-				log.Printf("Error parsing timestamp %s: %s", m.Timestamp, err)
-			}
-			if ts.After(cutoff) {
-				log.Printf("Tokens generated: %d", m.OutputTokens)
-				l.metricUpdater <- metrics.MetricUpdate{Type: metrics.LLM_TOKENS, Value: float64(m.OutputTokens)}
+			for _, m := range marr {
+				ts, err := time.Parse(time.RFC3339Nano, m.Timestamp)
+				if err != nil {
+					log.Printf("Error parsing timestamp %s: %s", m.Timestamp, err)
+				}
+				if ts.After(cutoff) {
+					log.Printf("Tokens generated: %d", m.OutputTokens)
+					l.metricUpdater <- metrics.MetricUpdate{Type: metrics.LLM_TOKENS, Value: float64(m.OutputTokens)}
+				}
 			}
 		case err := <-stream.Errors:
 			log.Printf("Error: %s", err)
