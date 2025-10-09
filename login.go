@@ -73,7 +73,11 @@ func setToken(c echo.Context, subject string) error {
 	if err != nil {
 		return err
 	}
-	c.SetCookie(&http.Cookie{Name: cookieName, Value: signed, HttpOnly: true, Path: "/", SameSite: http.SameSiteLaxMode, Expires: expiration})
+	domain := params.Domain
+	if !strings.HasSuffix(c.Request().Host, domain) {
+		domain = ""
+	}
+	c.SetCookie(&http.Cookie{Name: cookieName, Value: signed, HttpOnly: true, Path: "/", SameSite: http.SameSiteLaxMode, Expires: expiration, Domain: domain})
 	return nil
 }
 
