@@ -28,6 +28,7 @@ var (
 		"tts":     {Domain: "", Path: "/tts"},
 		"acestep": {Domain: "acestep", Path: "/"},
 		"ovi":     {Domain: "ovi", Path: "/"},
+		"llm":     {Domain: "", Path: "/upstream"},
 	}
 )
 
