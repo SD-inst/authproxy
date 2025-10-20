@@ -167,6 +167,9 @@ func main() {
 	e.Group("/*", earlyCheckMiddleware("/"), func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			for d, t := range domains {
+				if len(d) > 0 && d[0] == '/' { // skip path checks
+					continue
+				}
 				if c.Request().Host == d+params.Domain {
 					return t(next)(c)
 				}
@@ -174,6 +177,14 @@ func main() {
 			return domains[""](next)(c)
 		}
 	})
+	for d, t := range domains {
+		if len(d) > 0 && d[0] == '/' {
+			trail := middleware.AddTrailingSlashWithConfig(middleware.TrailingSlashConfig{RedirectCode: http.StatusMovedPermanently, Skipper: func(c echo.Context) bool {
+				return c.Request().RequestURI != d
+			}})
+			e.Group(d, earlyCheckMiddleware(d), trail, middleware.Rewrite(map[string]string{d + "/*": "/$1"}), t)
+		}
+	}
 	e.Group("/sdapi", domains[params.Domain])
 	addSDQueueHandlers(e, sq)
 	addASQueueHandlers(e, sq)
