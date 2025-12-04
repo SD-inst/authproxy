@@ -49,14 +49,16 @@ var params struct {
 const sdurl = "http://stablediff-cuda:7860"
 
 var domains = map[string]echo.MiddlewareFunc{
-	"":         proxy.NewProxyWrapperStr(sdurl, nil),
-	"acestep.": proxy.NewProxyWrapperStr("http://acestep:7865", nil),
-	"ovi.":     proxy.NewProxyWrapperStr("http://ovi:7860", nil),
+	"":            proxy.NewProxyWrapperStr(sdurl, nil),
+	"acestep.":    proxy.NewProxyWrapperStr("http://acestep:7865", nil),
+	"ovi.":        proxy.NewProxyWrapperStr("http://ovi:7860", nil),
+	"cui.":        proxy.NewProxyWrapperStr("http://comfyui:8188", nil),
+	"/vote2025hw": proxy.NewProxyWrapperStr("http://sdvote:8000", nil),
 }
 
 var skipAuth = map[string][]string{
 	"path": {
-		"/login", "/metrics", "/internal/join", "/internal/leave", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/ovi/join", "/ovi/leave",
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/ovi/join", "/ovi/leave",
 	},
 	"prefix": {
 		"/v1/", "/sdapi/",
@@ -157,6 +159,10 @@ func main() {
 	wd := watchdog.NewWatchdog(params.FIFOPath)
 	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)
+	e.POST("/internal/free_complete", func(c echo.Context) error {
+		sq.SetCleanupProgress(true)
+		return nil
+	})
 	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan, svcChan)
 	pr.AddHandlers(e)
 	pr.Start(sq)

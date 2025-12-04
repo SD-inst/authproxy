@@ -22,8 +22,9 @@ func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL
 		sq.AwaitReent(servicequeue.CUI)
 		sq.CF = &servicequeue.CleanupFunc{
 			F: func() {
+				sq.SetCleanupProgress(false)
 				http.Post(cuiurl.String()+"/free", echo.MIMEApplicationJSON, bytes.NewBufferString(`{"unload_models":"true","free_memory":"true"}`))
-				time.Sleep(time.Second * 8)
+				sq.WaitForCleanup(time.Second * 20)
 			},
 			Service: servicequeue.CUI}
 		return nil

@@ -54,18 +54,22 @@ type SvcUpdate struct {
 
 type ServiceQueue struct {
 	sync.Mutex
-	cv           *sync.Cond
-	cleanupTimer *time.Timer
-	service      SvcType
-	CF           *CleanupFunc // executes after await if service changed
-	svcChan      chan<- SvcUpdate
-	waitqueue    atomic.Int32
+	cv                *sync.Cond
+	cleanupTimer      *time.Timer
+	service           SvcType
+	CF                *CleanupFunc // executes after await if service changed
+	svcChan           chan<- SvcUpdate
+	waitqueue         atomic.Int32
+	cleanupCV         *sync.Cond
+	cleanupM          sync.Mutex
+	cleanupInProgress bool
 }
 
 func NewServiceQueue(svcChan chan<- SvcUpdate) *ServiceQueue {
 	result := ServiceQueue{service: NONE}
 	result.cv = sync.NewCond(&result)
 	result.svcChan = svcChan
+	result.cleanupCV = sync.NewCond(&result.cleanupM)
 	return &result
 }
 
@@ -179,4 +183,29 @@ func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) b
 		sq.Unlock()
 		return nil
 	}
+}
+
+func (sq *ServiceQueue) SetCleanupProgress(done bool) {
+	sq.cleanupM.Lock()
+	defer sq.cleanupM.Unlock()
+	sq.cleanupInProgress = done
+	if done {
+		sq.cleanupCV.Broadcast()
+	}
+}
+
+func (sq *ServiceQueue) WaitForCleanup(timeout time.Duration) (timedout bool) {
+	sq.cleanupM.Lock()
+	defer sq.cleanupM.Unlock()
+	time.AfterFunc(timeout, func() {
+		timedout = true
+		sq.cleanupCV.Broadcast()
+	})
+	for !sq.cleanupInProgress {
+		sq.cleanupCV.Wait()
+		if timedout {
+			return
+		}
+	}
+	return
 }
