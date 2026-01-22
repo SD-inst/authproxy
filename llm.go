@@ -49,7 +49,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 		},
 		After: sq.ServiceCloser(servicequeue.LLM, func(path string) bool {
 			return isLLMPath(path)
-		}, time.Second*30, true),
+		}, time.Second*120, true),
 	})
 	go result.startMetricCollection()
 	return &result
