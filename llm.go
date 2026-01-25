@@ -36,6 +36,11 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 			if !isLLMPath(path) {
 				return
 			}
+			// Convert WebP to PNG in request body for VLM images
+			if err := proxy.ConvertRequestIfNeeded(c); err != nil {
+				log.Printf("Error converting request images: %s", err)
+				// Don't fail the request, just log the error
+			}
 			sq.Lock()
 			defer sq.Unlock()
 			log.Print("LLM sq locked, waiting...")
