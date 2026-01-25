@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -56,8 +55,8 @@ func CopyLink(src string, dst string) error {
 }
 
 func (d *Downloader) UpdateFile(filename string) error {
-	oldumask := syscall.Umask(0111)
-	defer syscall.Umask(oldumask)
+	oldumask := maybeUmask(0111)
+	defer maybeUmask(oldumask)
 	ext := filepath.Ext(filename)
 	if ext != ".safetensors" {
 		return fmt.Errorf("invalid extension")
