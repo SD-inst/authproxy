@@ -24,7 +24,8 @@ type llmbalancer struct {
 }
 
 func isLLMPath(path string) bool {
-	return strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/completions") || strings.HasSuffix(path, "/v1/internal/encode") || strings.HasPrefix(path, "/upstream/")
+	return strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/completions") ||
+		strings.HasSuffix(path, "/v1/internal/encode") || strings.HasSuffix(path, "/v1/embeddings") || strings.HasPrefix(path, "/upstream/")
 }
 
 func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdater chan<- metrics.MetricUpdate) *llmbalancer {
