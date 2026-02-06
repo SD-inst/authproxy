@@ -65,9 +65,6 @@ func checkACL(domain string, path string, login string) bool {
 	if _, ok := whitelist[login][domain]; !ok {
 		return false
 	}
-	if _, ok := whitelist[login][domain]; !ok {
-		return false
-	}
 	allowed := false
 	for _, p := range whitelist[login][domain] {
 		if strings.HasPrefix(path, p) {
