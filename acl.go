@@ -21,14 +21,15 @@ var (
 	blacklist      = map[string]map[string][]string{}
 	fullaccess     = map[string]struct{}{}
 	serviceMapping = map[string]ACLElement{
-		"a1111":   {Domain: "", Path: "/"},
-		"status":  {Domain: "", Path: "/q"},
-		"comfyui": {Domain: "", Path: "/cui"},
-		"cozyui":  {Domain: "", Path: "/cozyui"},
-		"tts":     {Domain: "", Path: "/tts"},
-		"acestep": {Domain: "acestep", Path: "/"},
-		"ovi":     {Domain: "ovi", Path: "/"},
-		"llm":     {Domain: "", Path: "/upstream"},
+		"a1111":     {Domain: "", Path: "/"},
+		"status":    {Domain: "", Path: "/q"},
+		"comfyui":   {Domain: "", Path: "/cui"},
+		"cozyui":    {Domain: "", Path: "/cozyui"},
+		"tts":       {Domain: "", Path: "/tts"},
+		"acestep":   {Domain: "acestep", Path: "/"},
+		"acestep15": {Domain: "as15", Path: "/"},
+		"ovi":       {Domain: "ovi", Path: "/"},
+		"llm":       {Domain: "", Path: "/upstream"},
 	}
 )
 
