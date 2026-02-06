@@ -29,7 +29,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 		sq.AwaitReent(servicequeue.ACESTEP15)
 		sq.CF = &servicequeue.CleanupFunc{
 			F: func() {
-				cleanupClient.Post("http://acestep15:7860/unload_llm", echo.MIMEApplicationJSON, nil)
+				cleanupClient.Post(AS15_URL+"/unload_llm", echo.MIMEApplicationJSON, nil)
 			},
 			Service: servicequeue.ACESTEP15,
 		}

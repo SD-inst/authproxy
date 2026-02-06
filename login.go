@@ -33,8 +33,8 @@ type Result map[string]interface{}
 
 type LoginPageData struct {
 	ReturnTo   string
+	PageHeader string
 	PageTitle  string
-	LoginTitle string
 }
 
 const (
@@ -57,8 +57,8 @@ func loginPageHandler(c echo.Context) error {
 	if err != nil || cookie.Value == "" {
 		return tpl.Execute(c.Response(), LoginPageData{
 			ReturnTo:   returnTo,
-			PageTitle:  params.PageTitle,
-			LoginTitle: params.LoginTitle,
+			PageHeader: config.LoginHeader,
+			PageTitle:  config.LoginTitle,
 		})
 	}
 	if returnTo == "" {
@@ -83,7 +83,7 @@ func setToken(c echo.Context, subject string) error {
 	if err != nil {
 		return err
 	}
-	domain := params.Domain
+	domain := config.Domain
 	if !strings.HasSuffix(c.Request().Host, domain) {
 		domain = ""
 	}

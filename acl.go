@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -94,21 +92,8 @@ func checkACL(domain string, path string, login string) bool {
 	return true
 }
 
-func loadACL(filename string) error {
-	f, err := os.Open(filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		line := s.Text()
-		split := strings.Split(line, ":")
-		if len(split) != 2 {
-			return fmt.Errorf("invalid acl line: %s", line)
-		}
-		login := split[0]
-		services := strings.Split(split[1], ",")
+func loadACL() error {
+	for login, services := range config.ACL {
 		if len(services) == 1 && services[0] == "*" {
 			fullaccess[login] = struct{}{}
 		} else {
@@ -131,7 +116,7 @@ func aclMiddleware() echo.MiddlewareFunc {
 				if claims != nil {
 					subject, err := claims.GetSubject()
 					if err == nil && subject != "" {
-						domain := strings.TrimSuffix(c.Request().Host, params.Domain)
+						domain := strings.TrimSuffix(c.Request().Host, config.Domain)
 						path := c.Request().URL.Path
 						if !checkACL(domain, path, subject) {
 							log.Printf("ACL access denied for user %s to %s %s", subject, domain, path)

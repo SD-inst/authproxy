@@ -26,37 +26,20 @@ import (
 )
 
 var params struct {
-	CredFilename string `short:"f" description:"Credentials filename" required:"true"`
-	ACLFilename  string `short:"c" description:"Access control list filename"`
-	AddUser      bool   `short:"a" description:"Add new user"`
-	Username     string `short:"u" description:"Username for -a"`
-	Password     string `short:"p" description:"Password for -a"`
-	Domain       string `short:"d" description:"Main domain"`
-	LLMURL       string `long:"llm-url" description:"Target LLM URL to proxy to"`
-	TTSURL       string `long:"tts-url" description:"TTS URL"`
-	CUIURL       string `long:"cui-url" description:"ComfyUI URL to proxy to"`
-	Address      string `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
-	LoRAPath     string `long:"lora-path" description:"Path to the directory for LoRA uploads"`
-	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
-	PageTitle    string `long:"page-title" description:"Title text for login page" default:"Stable Diffusion for friends"`
-	LoginTitle   string `long:"login-title" description:"Login page invitation text" default:"Please log in"`
-	SDTimeout    int    `long:"sd-timeout" description:"SD task timeout in seconds" default:"300"`
-	FIFOPath     string `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
-	JWTSecret    string
-	CookieFile   string `long:"cookie-file" description:"Path to the cookie storage file"`
-	PushPassword string `long:"push-password" description:"Password to push prometheus metrics from other services"`
-	StaticPath   string `long:"static-path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
+	ConfigFilename string `short:"c" description:"Config filename" required:"true"`
+	AddUser        bool   `short:"a" description:"Add new user"`
+	Username       string `short:"u" description:"Username for -a"`
+	Password       string `short:"p" description:"Password for -a"`
+	JWTSecret      string
 }
 
-const sdurl = "http://stablediff-cuda:7860"
-
 var domains = map[string]echo.MiddlewareFunc{
-	"":            proxy.NewProxyWrapperStr(sdurl, nil),
-	"acestep.":    proxy.NewProxyWrapperStr("http://acestep:7865", nil),
-	"as15.":       proxy.NewProxyWrapperStr("http://acestep15:7860", nil),
-	"ovi.":        proxy.NewProxyWrapperStr("http://ovi:7860", nil),
-	"cui.":        proxy.NewProxyWrapperStr("http://comfyui:8188", nil),
-	"/vote2025hw": proxy.NewProxyWrapperStr("http://sdvote:8000", nil),
+	"":            proxy.NewProxyWrapperStr(SD_URL, nil),
+	"acestep.":    proxy.NewProxyWrapperStr(AS10_URL, nil),
+	"as15.":       proxy.NewProxyWrapperStr(AS15_URL, nil),
+	"ovi.":        proxy.NewProxyWrapperStr(OVI_URL, nil),
+	"cui.":        proxy.NewProxyWrapperStr(CUI_URL, nil),
+	"/vote2025hw": proxy.NewProxyWrapperStr(SDVOTE_URL, nil),
 }
 
 var skipAuth = map[string][]string{
@@ -69,7 +52,7 @@ var skipAuth = map[string][]string{
 }
 
 func post(path string) {
-	_, err := http.Post(sdurl+path, "", nil)
+	_, err := http.Post(SD_URL+path, "", nil)
 	if err != nil {
 		log.Printf("*** Error calling %s: %s", path, err)
 		return
@@ -81,6 +64,9 @@ func main() {
 	if err != nil {
 		return
 	}
+	if err = loadConfig(params.ConfigFilename); err != nil {
+		log.Fatal(err)
+	}
 	if params.AddUser {
 		if params.Username == "" || params.Password == "" {
 			log.Fatal("Specify username and password to add")
@@ -89,29 +75,27 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error hashing password: %s", err)
 		}
-		err = loadCreds(params.CredFilename)
+		err = loadCreds(config.CredFilename)
 		if err != nil {
 			log.Printf("Error loading existing users: %s, will create a new file and JWT secret", err)
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 			params.JWTSecret = randomString(r, 64)
 		}
 		creds[strings.ToLower(params.Username)] = string(hashed)
-		saveCreds(params.CredFilename)
+		saveCreds(config.CredFilename)
 		log.Printf("User %s added", params.Username)
 		return
 	}
-	err = loadCreds(params.CredFilename)
+	err = loadCreds(config.CredFilename)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if params.ACLFilename != "" {
-		err = loadACL(params.ACLFilename)
-		if err != nil {
-			log.Fatalf("Error loading ACL from %s: %s", params.ACLFilename, err)
-		}
+	err = loadACL()
+	if err != nil {
+		log.Fatalf("Error loading ACL: %s", err)
 	}
 	e := echo.New()
-	mchan := metrics.NewMetrics(e, params.PushPassword)
+	mchan := metrics.NewMetrics(e, config.PushPassword)
 	e.Use(echojwt.WithConfig(echojwt.Config{
 		SigningKey:   []byte(params.JWTSecret),
 		ErrorHandler: keyErrorHandler,
@@ -159,17 +143,17 @@ func main() {
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
-	wd := watchdog.NewWatchdog(params.FIFOPath)
+	wd := watchdog.NewWatchdog(config.FIFOPath)
 	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)
 	e.POST("/internal/free_complete", func(c echo.Context) error {
 		sq.SetCleanupProgress(true)
 		return nil
 	})
-	pr := progress.NewProgress(broker, params.SDHost, params.SDTimeout, wd, mchan, svcChan)
+	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan)
 	pr.AddHandlers(e)
 	pr.Start(sq)
-	llmurl, err := url.Parse(params.LLMURL)
+	llmurl, err := url.Parse(LLM_URL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -179,7 +163,7 @@ func main() {
 				if len(d) > 0 && d[0] == '/' { // skip path checks
 					continue
 				}
-				if c.Request().Host == d+params.Domain {
+				if c.Request().Host == d+config.Domain {
 					return t(next)(c)
 				}
 			}
@@ -194,7 +178,7 @@ func main() {
 			e.Group(d, earlyCheckMiddleware(d), trail, middleware.Rewrite(map[string]string{d + "/*": "/$1"}), t)
 		}
 	}
-	e.Group("/sdapi", domains[params.Domain])
+	e.Group("/sdapi", domains[config.Domain])
 	addSDQueueHandlers(e, sq)
 	addASQueueHandlers(e, sq)
 	addOviQueueHandlers(e, sq)
@@ -206,28 +190,28 @@ func main() {
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models/*", llm.forbidden)
 	}
-	if params.LoRAPath != "" {
-		upload.NewUploader(e.Group("/upload"), params.LoRAPath, params.CookieFile, broker, mchan)
+	if config.LoRAPath != "" {
+		upload.NewUploader(e.Group("/upload"), config.LoRAPath, config.CookieFile, broker, mchan)
 	}
-	if params.TTSURL != "" {
-		ttsurl, err := url.Parse(params.TTSURL)
+	if TTS_URL != "" {
+		ttsurl, err := url.Parse(TTS_URL)
 		if err != nil {
 			log.Fatalf("Error parsing TTS URL: %s", err)
 		}
 		e.Group("/tts/*", earlyCheckMiddleware("/tts/"), middleware.Rewrite(map[string]string{"/tts/*": "/$1"}), newTTSProxy(ttsurl, sq, wd))
 	}
-	if params.CUIURL != "" {
-		cuiurl, err := url.Parse(params.CUIURL)
+	if CUI_URL != "" {
+		cuiurl, err := url.Parse(CUI_URL)
 		if err != nil {
 			log.Fatalf("Error parsing CUI URL: %s", err)
 		}
 		addCUIHandlers(e, sq, cuiurl)
 		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
-	if params.StaticPath != "" {
-		dirs, err := os.ReadDir(params.StaticPath)
+	if config.StaticPath != "" {
+		dirs, err := os.ReadDir(config.StaticPath)
 		if err != nil {
-			log.Fatalf("Error reading static directory %s: %s", params.StaticPath, err)
+			log.Fatalf("Error reading static directory %s: %s", config.StaticPath, err)
 		}
 		for _, d := range dirs {
 			if !d.IsDir() {
@@ -236,8 +220,11 @@ func main() {
 			dirname := d.Name()
 			e.Group("/"+dirname, earlyCheckMiddleware("/"+dirname+"/"), middleware.AddTrailingSlashWithConfig(middleware.TrailingSlashConfig{RedirectCode: 302, Skipper: func(c echo.Context) bool {
 				return c.Path() != "/"+dirname
-			}}), middleware.Static(filepath.Join(params.StaticPath, dirname)))
+			}}), middleware.Static(filepath.Join(config.StaticPath, dirname)))
 		}
 	}
-	e.Start(params.Address)
+	err = e.Start(config.Address)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
