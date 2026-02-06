@@ -38,6 +38,8 @@ var params struct {
 	Address      string `short:"l" description:"Listen at this address" default:"0.0.0.0:8000"`
 	LoRAPath     string `long:"lora-path" description:"Path to the directory for LoRA uploads"`
 	SDHost       string `long:"sd-host" description:"Stable Diffusion host to monitor" default:"http://stablediff-cuda:7860"`
+	PageTitle    string `long:"page-title" description:"Title text for login page" default:"Stable Diffusion for friends"`
+	LoginTitle   string `long:"login-title" description:"Login page invitation text" default:"Please log in"`
 	SDTimeout    int    `long:"sd-timeout" description:"SD task timeout in seconds" default:"300"`
 	FIFOPath     string `long:"fifo-path" description:"Path to FIFO controlling instance restarts" default:"/var/run/sdwd/control.fifo"`
 	JWTSecret    string

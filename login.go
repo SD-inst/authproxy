@@ -31,6 +31,12 @@ var creds = map[string]string{}
 
 type Result map[string]interface{}
 
+type LoginPageData struct {
+	ReturnTo   string
+	PageTitle  string
+	LoginTitle string
+}
+
 const (
 	expirationDays = 7
 	renewTime      = time.Hour * 24 * 6
@@ -49,7 +55,11 @@ func loginPageHandler(c echo.Context) error {
 	returnTo := c.QueryParam("return")
 	cookie, err := c.Cookie(cookieName)
 	if err != nil || cookie.Value == "" {
-		return tpl.Execute(c.Response(), struct{ ReturnTo string }{ReturnTo: returnTo})
+		return tpl.Execute(c.Response(), LoginPageData{
+			ReturnTo:   returnTo,
+			PageTitle:  params.PageTitle,
+			LoginTitle: params.LoginTitle,
+		})
 	}
 	if returnTo == "" {
 		returnTo = "/"
