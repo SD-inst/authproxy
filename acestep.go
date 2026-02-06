@@ -40,8 +40,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	e.POST("/acestep15/leave", func(c echo.Context) error {
 		sq.Lock()
 		sq.AwaitReent(servicequeue.ACESTEP15)
-		sq.CancelCleanup()
-		sq.SetService(servicequeue.NONE)
+		sq.SetCleanup(time.Second)
 		sq.Unlock()
 		return nil
 	})
