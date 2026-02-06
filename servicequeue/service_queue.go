@@ -18,6 +18,7 @@ const (
 	CUI
 	ACESTEP
 	OVI
+	ACESTEP15
 	IGNORE = 999
 )
 
@@ -37,6 +38,8 @@ func (s SvcType) String() string {
 		return "ACESTEP"
 	case OVI:
 		return "OVI"
+	case ACESTEP15:
+		return "ACESTEP1.5"
 	default:
 		return "<unknown>"
 	}

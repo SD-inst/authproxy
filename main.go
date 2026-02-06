@@ -53,6 +53,7 @@ const sdurl = "http://stablediff-cuda:7860"
 var domains = map[string]echo.MiddlewareFunc{
 	"":            proxy.NewProxyWrapperStr(sdurl, nil),
 	"acestep.":    proxy.NewProxyWrapperStr("http://acestep:7865", nil),
+	"as15.":       proxy.NewProxyWrapperStr("http://acestep15:7860", nil),
 	"ovi.":        proxy.NewProxyWrapperStr("http://ovi:7860", nil),
 	"cui.":        proxy.NewProxyWrapperStr("http://comfyui:8188", nil),
 	"/vote2025hw": proxy.NewProxyWrapperStr("http://sdvote:8000", nil),
@@ -60,7 +61,7 @@ var domains = map[string]echo.MiddlewareFunc{
 
 var skipAuth = map[string][]string{
 	"path": {
-		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/ovi/join", "/ovi/leave",
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep15/join", "/acestep15/leave", "/ovi/join", "/ovi/leave",
 	},
 	"prefix": {
 		"/v1/", "/sdapi/",
