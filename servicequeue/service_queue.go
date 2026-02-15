@@ -19,6 +19,7 @@ const (
 	ACESTEP
 	OVI
 	ACESTEP15
+	WAIT   = 500
 	IGNORE = 999
 )
 
@@ -40,6 +41,8 @@ func (s SvcType) String() string {
 		return "OVI"
 	case ACESTEP15:
 		return "ACESTEP1.5"
+	case WAIT:
+		return "WAIT"
 	default:
 		return "<unknown>"
 	}
@@ -60,6 +63,7 @@ type ServiceQueue struct {
 	cv                *sync.Cond
 	cleanupTimer      *time.Timer
 	service           SvcType
+	waitedService     SvcType
 	CF                *CleanupFunc // executes after await if service changed
 	svcChan           chan<- SvcUpdate
 	waitqueue         atomic.Int32
@@ -78,12 +82,16 @@ func NewServiceQueue(svcChan chan<- SvcUpdate) *ServiceQueue {
 
 // caller should lock and unlock sq, returns true if service has been changed or false if it was the same
 func (sq *ServiceQueue) AwaitReent(t SvcType) bool {
-	return sq.Await(t, true)
+	return sq.AwaitWithPredicate(t, true, nil)
 }
 
 // allowReent finishes waiting if the service is already t, otherwise it waits for NONE
 func (sq *ServiceQueue) Await(t SvcType, allowReent bool) bool {
-	sq.AwaitCheck(t, allowReent, true)
+	return sq.AwaitWithPredicate(t, allowReent, nil)
+}
+
+func (sq *ServiceQueue) AwaitWithPredicate(t SvcType, allowReent bool, p WaitPredicate) bool {
+	sq.AwaitCheck(t, allowReent, true, p)
 	if sq.service == t { // shouldn't happen if allowReent is false
 		log.Printf("*** Service is already %v, proceeding ***", t)
 		sq.CancelCleanup()
@@ -114,7 +122,9 @@ func (sq *ServiceQueue) maybeUpdateQueue(ql int32) <-chan bool {
 	return sent
 }
 
-func (sq *ServiceQueue) AwaitCheck(t SvcType, allowReent bool, queueUp bool) {
+type WaitPredicate func() bool
+
+func (sq *ServiceQueue) AwaitCheck(t SvcType, allowReent bool, queueUp bool, p WaitPredicate) {
 	if queueUp {
 		sentChan := sq.maybeUpdateQueue(sq.waitqueue.Add(1))
 		defer func() {
@@ -126,7 +136,16 @@ func (sq *ServiceQueue) AwaitCheck(t SvcType, allowReent bool, queueUp bool) {
 			}()
 		}()
 	}
-	for (sq.service != t || !allowReent) && sq.service != NONE {
+	for {
+		if sq.service == NONE {
+			break
+		}
+		if allowReent && sq.service == t {
+			break
+		}
+		if p != nil && sq.service == WAIT && sq.waitedService == t && p() {
+			break
+		}
 		log.Printf("*** Waiting for service %v, have %v [reent: %t] ***", t, sq.service, allowReent)
 		sq.cv.Wait()
 	}
@@ -150,12 +169,20 @@ func (sq *ServiceQueue) CancelCleanup() {
 // should be called under lock
 func (sq *ServiceQueue) SetService(s SvcType) {
 	log.Printf("*** Setting service to %v ***", s)
+	if s == WAIT {
+		sq.waitedService = sq.service
+		log.Printf("*** Setting service waiting to %v ***", sq.waitedService)
+	}
 	sq.service = s
 	sq.cv.Broadcast()
 	sq.svcChan <- SvcUpdate{Type: s, Queue: sq.waitqueue.Load()}
 }
 
 func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {
+	return sq.ServiceCloserWithAfterBody(t, pathChecker, timeout, closeOnBody, 0)
+}
+
+func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool, waitAfterBody time.Duration) func(req *http.Request, resp *http.Response) error {
 	return func(req *http.Request, resp *http.Response) error {
 		path := req.URL.Path
 		if !pathChecker(path) {
@@ -171,7 +198,12 @@ func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) b
 					log.Printf("*** Closing body ***")
 					sq.Lock()
 					sq.CancelCleanup()
-					sq.SetService(NONE)
+					if waitAfterBody > 0 {
+						sq.SetService(WAIT)
+						sq.SetCleanup(waitAfterBody)
+					} else {
+						sq.SetService(NONE)
+					}
 					sq.Unlock()
 				}}
 			} else {

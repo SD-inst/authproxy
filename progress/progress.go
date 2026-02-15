@@ -167,7 +167,7 @@ func (p *progress) sdQuery(sq *servicequeue.ServiceQueue) {
 	for {
 		time.Sleep(time.Second)
 		sq.Lock()
-		sq.AwaitCheck(servicequeue.SD, true, false)
+		sq.AwaitCheck(servicequeue.SD, true, false, nil)
 		sq.Unlock()
 		resp, err := client.Get(p.sdhost + "/sdapi/v1/progress")
 		if err != nil {

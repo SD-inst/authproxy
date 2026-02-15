@@ -21,6 +21,7 @@ type llmbalancer struct {
 	client        http.Client
 	sq            *servicequeue.ServiceQueue
 	metricUpdater chan<- metrics.MetricUpdate
+	apiKey        string
 }
 
 func isLLMPath(path string) bool {
@@ -45,7 +46,20 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 			sq.Lock()
 			defer sq.Unlock()
 			log.Print("LLM sq locked, waiting...")
-			sq.Await(servicequeue.LLM, false) // wait until there are no tasks to prevent concurrent model loading
+			// wait until there are no tasks to prevent concurrent model loading
+			// only allow call chaining with POST methods
+			if c.Request().Method == "POST" {
+				// this can proceed if the service is either NONE or WAIT/LLM and the API apiKey matches (allow consequent requests from the same user to go uninterrupted)
+				apiKey := c.Request().Header.Get("Authorization")
+				prevKey := result.apiKey
+				sq.AwaitWithPredicate(servicequeue.LLM, false, func() bool {
+					return apiKey == prevKey
+				})
+				// don't need to make it a CV as we rely on service queue mutex
+				result.apiKey = apiKey
+			} else {
+				sq.Await(servicequeue.LLM, false)
+			}
 			sq.CF = &servicequeue.CleanupFunc{
 				F: func() {
 					result.client.Get(result.target.JoinPath("/unload").String())
@@ -53,9 +67,9 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 				Service: servicequeue.LLM,
 			}
 		},
-		After: sq.ServiceCloser(servicequeue.LLM, func(path string) bool {
+		After: sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
 			return isLLMPath(path)
-		}, time.Second*120, true),
+		}, time.Second*120, true, time.Second*3),
 	})
 	go result.startMetricCollection()
 	return &result
