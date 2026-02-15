@@ -18,7 +18,7 @@
             const host = location.href.replace('http', 'ws');
             const apiUrl = host + (host.endsWith('/') ? '' : '/') + 'ws';
             const appname = 'SD queue monitor';
-            function service_str(s) {
+            function service_str(s, ws) {
                 switch (s) {
                     case 0:
                         return 'NONE';
@@ -37,6 +37,9 @@
                     case 7:
                         return 'ACESTEP1.5';
                     case 500:
+                        if (ws !== undefined && ws !== 500) {
+                            return 'WAIT/' + service_str(ws)
+                        }
                         return 'WAIT';
                     default:
                         return 'UNKNOWN';
@@ -123,8 +126,8 @@
                             ).innerText = `Total: ${data.total} MB`;
                             break;
                         case 'service':
-                            const curService = service_str(data.service);
-                            const prevService = service_str(data.prev_service);
+                            const curService = service_str(data.service, data.wait_service);
+                            const prevService = service_str(data.prev_service, data.wait_service);
                             const serviceQueue = data.service_queue;
                             if (progress.sq !== serviceQueue) {
                                 progress.sq = serviceQueue;

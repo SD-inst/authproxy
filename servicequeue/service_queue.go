@@ -54,8 +54,9 @@ type CleanupFunc struct {
 }
 
 type SvcUpdate struct {
-	Type  SvcType
-	Queue int32
+	Type     SvcType
+	WaitType SvcType
+	Queue    int32
 }
 
 type ServiceQueue struct {
@@ -175,7 +176,7 @@ func (sq *ServiceQueue) SetService(s SvcType) {
 	}
 	sq.service = s
 	sq.cv.Broadcast()
-	sq.svcChan <- SvcUpdate{Type: s, Queue: sq.waitqueue.Load()}
+	sq.svcChan <- SvcUpdate{Type: s, WaitType: sq.waitedService, Queue: sq.waitqueue.Load()}
 }
 
 func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {
