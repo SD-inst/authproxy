@@ -34,7 +34,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 			Service: servicequeue.ACESTEP15,
 		}
 		sq.Unlock()
-		sq.SetCleanup(time.Minute)
+		sq.SetCleanup(3 * time.Minute)
 		return nil
 	})
 	e.POST("/acestep15/leave", func(c echo.Context) error {
