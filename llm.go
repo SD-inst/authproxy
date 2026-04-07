@@ -60,6 +60,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 			} else {
 				sq.Await(servicequeue.LLM, false)
 			}
+			sq.CancelCleanup() // cancel potential WAIT/LLM cleanup
 			sq.CF = &servicequeue.CleanupFunc{
 				F: func() {
 					result.client.Get(result.target.JoinPath("/unload").String())
@@ -69,7 +70,12 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 		},
 		After: sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
 			return isLLMPath(path)
-		}, time.Second*120, true, time.Second*3),
+		}, time.Second*120, true, func(req *http.Request) time.Duration {
+			if strings.Contains(req.URL.Path, "/completions") && req.Method == "POST" {
+				return time.Second * 10
+			}
+			return 0
+		}),
 	})
 	go result.startMetricCollection()
 	return &result

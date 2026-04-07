@@ -180,10 +180,10 @@ func (sq *ServiceQueue) SetService(s SvcType) {
 }
 
 func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {
-	return sq.ServiceCloserWithAfterBody(t, pathChecker, timeout, closeOnBody, 0)
+	return sq.ServiceCloserWithAfterBody(t, pathChecker, timeout, closeOnBody, nil)
 }
 
-func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool, waitAfterBody time.Duration) func(req *http.Request, resp *http.Response) error {
+func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool, waitAfterBody func(req *http.Request) time.Duration) func(req *http.Request, resp *http.Response) error {
 	return func(req *http.Request, resp *http.Response) error {
 		path := req.URL.Path
 		if !pathChecker(path) {
@@ -199,9 +199,14 @@ func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(p
 					log.Printf("*** Closing body ***")
 					sq.Lock()
 					sq.CancelCleanup()
-					if waitAfterBody > 0 {
-						sq.SetService(WAIT)
-						sq.SetCleanup(waitAfterBody)
+					if waitAfterBody != nil {
+						waitDuration := waitAfterBody(req)
+						if waitDuration > 0 {
+							sq.SetService(WAIT)
+							sq.SetCleanup(waitDuration)
+						} else {
+							sq.SetService(NONE)
+						}
 					} else {
 						sq.SetService(NONE)
 					}
