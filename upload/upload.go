@@ -213,11 +213,11 @@ func (u *uploader) download(c echo.Context) error {
 	}
 	cu, err := url.Parse(params.URL)
 	if err != nil {
-		u.dlError("Invalid URL: " + err.Error())
+		u.dlError("Invalid URL: %s", err.Error())
 		return nil
 	}
-	if cu.Host != "civitai.com" {
-		u.dlError("Only civitai.com is supported")
+	if cu.Host != "civitai.com" && cu.Host != "civitai.red" {
+		u.dlError("Only civitai.com and civitai.red is supported")
 		return nil
 	}
 	m := modelRegex.FindStringSubmatch(cu.Path)
