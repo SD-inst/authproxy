@@ -1,17 +1,11 @@
 package main
 
 import (
-	"net/url"
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/rkfg/authproxy/proxy"
 	"github.com/rkfg/authproxy/servicequeue"
 )
-
-func newSDProxy(target *url.URL) (result echo.MiddlewareFunc) {
-	return proxy.NewProxyWrapper(target, nil)
-}
 
 func addSDQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	cleanupFunc := &servicequeue.CleanupFunc{
