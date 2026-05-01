@@ -87,13 +87,15 @@ type eventType struct {
 }
 
 type metricType struct {
-	ID              uint64  `json:"id"`
-	Timestamp       string  `json:"timestamp"`
-	Model           string  `json:"model"`
-	InputTokens     uint64  `json:"input_tokens"`
-	OutputTokens    uint64  `json:"output_tokens"`
-	TokensPerSecond float32 `json:"tokens_per_second"`
-	DurationMS      uint64  `json:"duration_ms"`
+	ID        uint64 `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Model     string `json:"model"`
+	Tokens    struct {
+		InputTokens     uint64  `json:"input_tokens"`
+		OutputTokens    uint64  `json:"output_tokens"`
+		TokensPerSecond float32 `json:"tokens_per_second"`
+	}
+	DurationMS uint64 `json:"duration_ms"`
 }
 
 func (l *llmbalancer) startMetricCollection() {
@@ -134,8 +136,8 @@ func (l *llmbalancer) startMetricCollection() {
 					log.Printf("Error parsing timestamp %s: %s", m.Timestamp, err)
 				}
 				if ts.After(cutoff) {
-					log.Printf("Tokens generated: %d", m.OutputTokens)
-					l.metricUpdater <- metrics.MetricUpdate{Type: metrics.LLM_TOKENS, Value: float64(m.OutputTokens)}
+					log.Printf("Tokens generated: %d", m.Tokens.OutputTokens)
+					l.metricUpdater <- metrics.MetricUpdate{Type: metrics.LLM_TOKENS, Value: float64(m.Tokens.OutputTokens)}
 				}
 			}
 		case err := <-stream.Errors:
