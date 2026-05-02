@@ -71,7 +71,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 		After: sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
 			return isLLMPath(path)
 		}, time.Second*120, true, func(req *http.Request) time.Duration {
-			if strings.Contains(req.URL.Path, "/completions") && req.Method == "POST" {
+			if (strings.Contains(req.URL.Path, "/completions") || strings.Contains(req.URL.Path, "/embeddings")) && req.Method == "POST" {
 				return time.Second * 10
 			}
 			return 0
