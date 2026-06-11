@@ -23,6 +23,7 @@ body {
     display: flex;
     overflow-wrap: anywhere;
     align-items: center;
+    max-width: 400px;
 }
 
 a {
