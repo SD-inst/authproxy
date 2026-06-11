@@ -34,12 +34,14 @@ var params struct {
 }
 
 var domains = map[string]echo.MiddlewareFunc{
-	"":            proxy.NewProxyWrapperStr(SD_URL, nil),
-	"acestep.":    proxy.NewProxyWrapperStr(AS10_URL, nil),
-	"as15.":       proxy.NewProxyWrapperStr(AS15_URL, nil),
-	"ovi.":        proxy.NewProxyWrapperStr(OVI_URL, nil),
-	"cui.":        proxy.NewProxyWrapperStr(CUI_URL, nil),
-	"/vote2025hw": proxy.NewProxyWrapperStr(SDVOTE_URL, nil),
+	"":               proxy.NewProxyWrapperStr(SD_URL, nil),
+	"acestep.":       proxy.NewProxyWrapperStr(AS10_URL, nil),
+	"as15.":          proxy.NewProxyWrapperStr(AS15_URL, nil),
+	"ovi.":           proxy.NewProxyWrapperStr(OVI_URL, nil),
+	"cui.":           proxy.NewProxyWrapperStr(CUI_URL, nil),
+	"vlo.":           proxy.NewProxyWrapperStr(VLO_URL, nil),
+	"/vote2025hw":    proxy.NewProxyWrapperStr(SDVOTE_URL, nil),
+	"/lora_previews": proxy.NewProxyWrapperStr(CADDY_URL, nil),
 }
 
 var skipAuth = map[string][]string{
@@ -175,7 +177,7 @@ func main() {
 			trail := middleware.AddTrailingSlashWithConfig(middleware.TrailingSlashConfig{RedirectCode: http.StatusMovedPermanently, Skipper: func(c echo.Context) bool {
 				return c.Request().RequestURI != d
 			}})
-			e.Group(d, earlyCheckMiddleware(d), trail, middleware.Rewrite(map[string]string{d + "/*": "/$1"}), t)
+			e.Group(d, earlyCheckMiddleware(d), trail, t)
 		}
 	}
 	e.Group("/sdapi", domains[config.Domain])
