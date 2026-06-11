@@ -56,17 +56,18 @@ type sdprogress struct {
 }
 
 type progress struct {
-	b       *events.Broker
-	sdhost  string
-	wd      *watchdog.Watchdog
-	timeout time.Duration
-	m       chan<- metrics.MetricUpdate
-	svcChan <-chan servicequeue.SvcUpdate
-	pchan   chan sdprogress
+	b           *events.Broker
+	sdhost      string
+	wd          *watchdog.Watchdog
+	timeout     time.Duration
+	m           chan<- metrics.MetricUpdate
+	svcChan     <-chan servicequeue.SvcUpdate
+	pchan       chan sdprogress
+	statusToken string
 }
 
-func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100)}
+func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string) *progress {
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken}
 }
 
 func (p *progress) updater() {
@@ -192,6 +193,59 @@ func (p *progress) handleCUIProgress(c echo.Context) error {
 	return nil
 }
 
+type statusJSON struct {
+	Progress    float64 `json:"progress"`
+	TaskQueue   int     `json:"task_queue"`
+	ServiceQueue int32  `json:"service_queue"`
+	Service     string  `json:"service"`
+	ETA         string  `json:"eta"`
+}
+
+func (p *progress) handleStatusJSON(c echo.Context) error {
+	if p.statusToken != "" {
+		token := c.QueryParam("token")
+		if token != p.statusToken {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		}
+	}
+
+	var progProgress float64
+	var progQueued int
+	var progETA string
+
+	progResp := p.b.State(events.PROGRESS_UPDATE)
+	if progResp != nil {
+		if pkt, ok := progResp.(events.Packet); ok {
+			if pu, ok := pkt.Data.(ProgressUpdate); ok {
+				progProgress = pu.Progress
+				progQueued = pu.Queued
+				progETA = pu.ETA
+			}
+		}
+	}
+
+	var svcQueue int32
+	var svcName string
+
+	svcResp := p.b.State(events.SERVICE_UPDATE)
+	if svcResp != nil {
+		if pkt, ok := svcResp.(events.Packet); ok {
+			if su, ok := pkt.Data.(events.ServiceUpdate); ok {
+				svcQueue = su.Queue
+				svcName = su.Service.String()
+			}
+		}
+	}
+
+	return c.JSON(http.StatusOK, statusJSON{
+		Progress:     progProgress,
+		TaskQueue:    progQueued,
+		ServiceQueue: svcQueue,
+		Service:      svcName,
+		ETA:          progETA,
+	})
+}
+
 func (p *progress) Start(sq *servicequeue.ServiceQueue) {
 	go p.b.Start(context.Background())
 	go p.updater()
@@ -207,5 +261,6 @@ func (p *progress) AddHandlers(e *echo.Echo) {
 	}
 	e.GET("/q/*", echo.StaticDirectoryHandler(root, false))
 	e.GET("/q/ws", p.b.WSHandler)
+	e.GET("/q/status.json", p.handleStatusJSON)
 	e.POST("/cui/progress", p.handleCUIProgress)
 }

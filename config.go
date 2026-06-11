@@ -21,6 +21,7 @@ type Config struct {
 	PushPassword string `yaml:"push_password" description:"Password to push prometheus metrics from other services"`
 	StaticPath   string `yaml:"static_path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
 	ACL          ACL    `yaml:"acl,flow" description:"Mapping of user names to a list or roles or * for full access"`
+	StatusToken  string `yaml:"status_token" description:"Token for /q/status.json endpoint auth"`
 }
 
 var config = Config{

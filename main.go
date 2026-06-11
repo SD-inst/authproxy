@@ -44,7 +44,7 @@ var domains = map[string]echo.MiddlewareFunc{
 
 var skipAuth = map[string][]string{
 	"path": {
-		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep15/join", "/acestep15/leave", "/ovi/join", "/ovi/leave",
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep15/join", "/acestep15/leave", "/ovi/join", "/ovi/leave", "/q/status.json",
 	},
 	"prefix": {
 		"/v1/", "/sdapi/",
@@ -150,7 +150,7 @@ func main() {
 		sq.SetCleanupProgress(true)
 		return nil
 	})
-	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan)
+	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken)
 	pr.AddHandlers(e)
 	pr.Start(sq)
 	llmurl, err := url.Parse(LLM_URL)
