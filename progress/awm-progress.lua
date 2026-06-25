@@ -2,6 +2,7 @@ local awful = require("awful")
 
 local function parse_json_response(stdout)
     local prog, tq, sq = "0", "0", "0"
+    local svc = ""
 
     local p = stdout:match('"progress":([0-9.]+)')
     if p then
@@ -14,7 +15,12 @@ local function parse_json_response(stdout)
     local sq_match = stdout:match('"service_queue":([0-9]+)')
     if sq_match then sq = sq_match end
 
-    local parts = { prog .. "%" }
+    local svc_match = stdout:match('"service":"([^"]*)"')
+    if svc_match then
+        svc = svc_match:upper():sub(1, 1)
+    end
+
+    local parts = { svc .. ":" .. prog .. "%" }
     if tonumber(tq) > 0 then table.insert(parts, string.format("[q: %s]", tq)) end
     if tonumber(sq) > 0 then table.insert(parts, string.format("[sq: %s]", sq)) end
     return table.concat(parts, " ")
