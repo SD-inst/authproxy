@@ -127,7 +127,7 @@
                             break;
                         case 'service':
                             const curService = service_str(data.service, data.wait_service);
-                            const prevService = service_str(data.prev_service, data.wait_service);
+                            const prevService = service_str(data.prev_service, data.prev_wait_service);
                             const serviceQueue = data.service_queue;
                             if (progress.sq !== serviceQueue) {
                                 progress.sq = serviceQueue;

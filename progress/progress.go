@@ -157,6 +157,7 @@ func (p *progress) serviceUpdater() {
 			}
 			if prevSvc.Service != svc.Type {
 				event.PrevService = prevSvc.Service
+				event.PrevWaitService = prevSvc.WaitService
 			}
 		}
 		p.b.Broadcast(events.Packet{Type: events.SERVICE_UPDATE, Data: event})

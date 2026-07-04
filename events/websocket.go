@@ -1,12 +1,16 @@
 package events
 
 import (
+	"net/http"
+
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 )
 
 func (b *Broker) WSHandler(c echo.Context) error {
-	upg := websocket.Upgrader{}
+	upg := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool {
+		return true
+	}}
 	conn, err := upg.Upgrade(c.Response(), c.Request(), nil)
 	if err != nil {
 		return err

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -22,6 +24,7 @@ type llmbalancer struct {
 	sq            *servicequeue.ServiceQueue
 	metricUpdater chan<- metrics.MetricUpdate
 	apiKey        string
+	model         string
 }
 
 func isLLMPath(path string) bool {
@@ -52,11 +55,34 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 				// this can proceed if the service is either NONE or WAIT/LLM and the API apiKey matches (allow consequent requests from the same user to go uninterrupted)
 				apiKey := c.Request().Header.Get("Authorization")
 				prevKey := result.apiKey
-				sq.AwaitWithPredicate(servicequeue.LLM, false, func() bool {
-					return apiKey == prevKey
+				prevModel := result.model
+				body, err := io.ReadAll(c.Request().Body)
+				c.Request().Body = io.NopCloser(bytes.NewBuffer(body))
+				model := ""
+				if err != nil {
+					log.Printf("Error reading LLM request body: %s", err)
+				} else {
+					req := struct {
+						Model string
+					}{}
+					if err := json.Unmarshal(body, &req); err != nil {
+						log.Printf("Error parsing LLM request body: %s", err)
+					} else {
+						model = req.Model
+					}
+				}
+				sq.AwaitWithPredicate(servicequeue.LLM, true, func() bool {
+					if apiKey != prevKey {
+						log.Printf("API key mismatch: '%s' != '%s'", apiKey, prevKey)
+					}
+					if result.model != "" && prevModel != model {
+						log.Printf("Model mismatch: '%s' != '%s'", model, prevModel)
+					}
+					return apiKey == prevKey && (result.model == "" || prevModel == model)
 				})
 				// don't need to make it a CV as we rely on service queue mutex
 				result.apiKey = apiKey
+				result.model = model
 			} else {
 				sq.Await(servicequeue.LLM, false)
 			}

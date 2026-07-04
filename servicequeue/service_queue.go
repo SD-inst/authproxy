@@ -2,6 +2,7 @@ package servicequeue
 
 import (
 	"log"
+	"math/rand"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -63,6 +64,7 @@ type ServiceQueue struct {
 	sync.Mutex
 	cv                *sync.Cond
 	cleanupTimer      *time.Timer
+	cleanupID         int
 	service           SvcType
 	waitedService     SvcType
 	CF                *CleanupFunc // executes after await if service changed
@@ -141,21 +143,27 @@ func (sq *ServiceQueue) AwaitCheck(t SvcType, allowReent bool, queueUp bool, p W
 		if sq.service == NONE {
 			break
 		}
-		if allowReent && sq.service == t {
+		if allowReent && sq.service == t && (p == nil || p()) {
 			break
 		}
 		if p != nil && sq.service == WAIT && sq.waitedService == t && p() {
 			break
 		}
-		log.Printf("*** Waiting for service %v, have %v [reent: %t] ***", t, sq.service, allowReent)
+		svc := sq.service.String()
+		if sq.service == WAIT {
+			svc += "/" + sq.waitedService.String()
+		}
+		log.Printf("*** Waiting for service %v, have %v [reent: %t] p = %v ***", t, svc, allowReent, p)
 		sq.cv.Wait()
 	}
 }
 
 func (sq *ServiceQueue) SetCleanup(d time.Duration) {
 	sq.CancelCleanup()
+	sq.cleanupID = rand.Intn(100)
+	log.Printf("*** Set cleanup timer id: %d, dur: %s ***", sq.cleanupID, d.String())
 	sq.cleanupTimer = time.AfterFunc(d, func() {
-		log.Print("*** Cleanup timer ***")
+		log.Printf("*** Running cleanup timer id: %d after %s ***", sq.cleanupID, d.String())
 		sq.SetService(NONE)
 	})
 }
@@ -163,6 +171,7 @@ func (sq *ServiceQueue) SetCleanup(d time.Duration) {
 func (sq *ServiceQueue) CancelCleanup() {
 	if sq.cleanupTimer != nil {
 		sq.cleanupTimer.Stop()
+		log.Printf("*** Cancelled cleanup timer id: %d ***", sq.cleanupID)
 	}
 	sq.cleanupTimer = nil
 }
@@ -170,9 +179,14 @@ func (sq *ServiceQueue) CancelCleanup() {
 // should be called under lock
 func (sq *ServiceQueue) SetService(s SvcType) {
 	log.Printf("*** Setting service to %v ***", s)
-	if s == WAIT {
-		sq.waitedService = sq.service
-		log.Printf("*** Setting service waiting to %v ***", sq.waitedService)
+	switch s {
+	case WAIT:
+		if sq.service != WAIT && sq.service != NONE {
+			sq.waitedService = sq.service
+			log.Printf("*** Setting service waiting to %v ***", sq.waitedService)
+		}
+	case NONE:
+		sq.waitedService = NONE
 	}
 	sq.service = s
 	sq.cv.Broadcast()
