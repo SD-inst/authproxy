@@ -116,7 +116,7 @@ func (sq *ServiceQueue) maybeUpdateQueue(ql int32) <-chan bool {
 		time.After(time.Second)
 		ql2 := sq.waitqueue.Load()
 		if ql == ql2 {
-			sq.svcChan <- SvcUpdate{Type: IGNORE, Queue: ql}
+			sq.svcChan <- SvcUpdate{Type: IGNORE, WaitType: sq.waitedService, Queue: ql}
 			sent <- true
 		} else {
 			sent <- false
@@ -183,14 +183,20 @@ func (sq *ServiceQueue) SetService(s SvcType) {
 	case WAIT:
 		if sq.service != WAIT && sq.service != NONE {
 			sq.waitedService = sq.service
+			sq.service = s
 			log.Printf("*** Setting service waiting to %v ***", sq.waitedService)
+		} else {
+			sq.service = NONE
+			sq.waitedService = NONE
 		}
 	case NONE:
 		sq.waitedService = NONE
+		sq.service = NONE
+	default:
+		sq.service = s
 	}
-	sq.service = s
 	sq.cv.Broadcast()
-	sq.svcChan <- SvcUpdate{Type: s, WaitType: sq.waitedService, Queue: sq.waitqueue.Load()}
+	sq.svcChan <- SvcUpdate{Type: sq.service, WaitType: sq.waitedService, Queue: sq.waitqueue.Load()}
 }
 
 func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {

@@ -56,14 +56,16 @@ type sdprogress struct {
 }
 
 type progress struct {
-	b           *events.Broker
-	sdhost      string
-	wd          *watchdog.Watchdog
-	timeout     time.Duration
-	m           chan<- metrics.MetricUpdate
-	svcChan     <-chan servicequeue.SvcUpdate
-	pchan       chan sdprogress
-	statusToken string
+	b                   *events.Broker
+	sdhost              string
+	wd                  *watchdog.Watchdog
+	timeout             time.Duration
+	m                   chan<- metrics.MetricUpdate
+	svcChan             <-chan servicequeue.SvcUpdate
+	pchan               chan sdprogress
+	statusToken         string
+	lastPrevService     servicequeue.SvcType
+	lastPrevWaitService servicequeue.SvcType
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string) *progress {
@@ -149,8 +151,8 @@ func (p *progress) serviceUpdater() {
 	for svc := range p.svcChan {
 		resp := p.b.State(events.SERVICE_UPDATE)
 		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue}
-		if p, ok := resp.(events.Packet); ok && p.Type == events.SERVICE_UPDATE {
-			prevSvc := p.Data.(events.ServiceUpdate)
+		if pkt, ok := resp.(events.Packet); ok && pkt.Type == events.SERVICE_UPDATE {
+			prevSvc := pkt.Data.(events.ServiceUpdate)
 			if svc.Type == servicequeue.IGNORE {
 				event.Service = prevSvc.Service
 				svc.Type = prevSvc.Service
@@ -158,8 +160,13 @@ func (p *progress) serviceUpdater() {
 			if prevSvc.Service != svc.Type {
 				event.PrevService = prevSvc.Service
 				event.PrevWaitService = prevSvc.WaitService
+			} else {
+				event.PrevService = p.lastPrevService
+				event.PrevWaitService = p.lastPrevWaitService
 			}
 		}
+		p.lastPrevService = event.PrevService
+		p.lastPrevWaitService = event.PrevWaitService
 		p.b.Broadcast(events.Packet{Type: events.SERVICE_UPDATE, Data: event})
 	}
 }
