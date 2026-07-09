@@ -202,11 +202,14 @@ func (p *progress) handleCUIProgress(c echo.Context) error {
 }
 
 type statusJSON struct {
-	Progress    float64 `json:"progress"`
-	TaskQueue   int     `json:"task_queue"`
-	ServiceQueue int32  `json:"service_queue"`
-	Service     string  `json:"service"`
-	ETA         string  `json:"eta"`
+	Progress        float64 `json:"progress"`
+	TaskQueue       int     `json:"task_queue"`
+	ServiceQueue    int32   `json:"service_queue"`
+	Service         string  `json:"service"`
+	WaitService     string  `json:"wait_service"`
+	PrevService     string  `json:"prev_service"`
+	PrevWaitService string  `json:"prev_wait_service"`
+	ETA             string  `json:"eta"`
 }
 
 func (p *progress) handleStatusJSON(c echo.Context) error {
@@ -234,23 +237,34 @@ func (p *progress) handleStatusJSON(c echo.Context) error {
 
 	var svcQueue int32
 	var svcName string
+	var waitSvcName string
+	var prevSvcName string
+	var prevWaitSvcName string
+	var su events.ServiceUpdate
 
 	svcResp := p.b.State(events.SERVICE_UPDATE)
 	if svcResp != nil {
 		if pkt, ok := svcResp.(events.Packet); ok {
-			if su, ok := pkt.Data.(events.ServiceUpdate); ok {
+			if suData, ok := pkt.Data.(events.ServiceUpdate); ok {
+				su = suData
 				svcQueue = su.Queue
 				svcName = su.Service.String()
+				waitSvcName = su.WaitService.String()
+				prevSvcName = su.PrevService.String()
+				prevWaitSvcName = su.PrevWaitService.String()
 			}
 		}
 	}
 
 	return c.JSON(http.StatusOK, statusJSON{
-		Progress:     progProgress,
-		TaskQueue:    progQueued,
-		ServiceQueue: svcQueue,
-		Service:      svcName,
-		ETA:          progETA,
+		Progress:        progProgress,
+		TaskQueue:       progQueued,
+		ServiceQueue:    svcQueue,
+		Service:         svcName,
+		WaitService:     waitSvcName,
+		PrevService:     prevSvcName,
+		PrevWaitService: prevWaitSvcName,
+		ETA:             progETA,
 	})
 }
 
