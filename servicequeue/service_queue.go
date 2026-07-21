@@ -55,9 +55,10 @@ type CleanupFunc struct {
 }
 
 type SvcUpdate struct {
-	Type     SvcType
-	WaitType SvcType
-	Queue    int32
+	Type      SvcType
+	WaitType  SvcType
+	Queue     int32
+	Description string
 }
 
 type ServiceQueue struct {
@@ -174,6 +175,10 @@ func (sq *ServiceQueue) CancelCleanup() {
 		log.Printf("*** Cancelled cleanup timer id: %d ***", sq.cleanupID)
 	}
 	sq.cleanupTimer = nil
+}
+
+func (sq *ServiceQueue) SendDescriptionUpdate(t SvcType, description string) {
+	sq.svcChan <- SvcUpdate{Type: t, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: description}
 }
 
 // should be called under lock

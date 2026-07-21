@@ -83,6 +83,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 				// don't need to make it a CV as we rely on service queue mutex
 				result.apiKey = apiKey
 				result.model = model
+				sq.SendDescriptionUpdate(servicequeue.LLM, model)
 			} else {
 				sq.Await(servicequeue.LLM, false)
 			}

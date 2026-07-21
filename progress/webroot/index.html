@@ -135,6 +135,9 @@
                             }
                             const service = prevService ? `${curService} ⇐ ${prevService}` : curService;
                             document.getElementById('service').innerText = service + (serviceQueue ? ` [queue: ${serviceQueue}]` : '');
+                            if (data.service !== 0 && data.description) {
+                                document.getElementById('description').innerText = 'LLM model: ' + data.description;
+                            }
                             document.getElementById('last_active').innerText =
                                 new Date(data.last_active).toLocaleString();
                     }

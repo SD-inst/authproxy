@@ -41,4 +41,5 @@ type ServiceUpdate struct {
 	PrevWaitService servicequeue.SvcType `json:"prev_wait_service"`
 	LastActive      time.Time            `json:"last_active"`
 	Queue           int32                `json:"service_queue"`
+	Description     string               `json:"description"`
 }
