@@ -137,6 +137,9 @@ func loadCreds(filename string) error {
 		pwd := split[1]
 		creds[login] = pwd
 	}
+	if err := s.Err(); err != nil {
+		return err
+	}
 	return nil
 }
 

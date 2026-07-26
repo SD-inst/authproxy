@@ -149,6 +149,9 @@ func (p *progress) gpuStatus() {
 		p.m <- metrics.MetricUpdate{Type: metrics.GPU_USED_MEMORY, Value: float64(used)}
 		p.m <- metrics.MetricUpdate{Type: metrics.GPU_JOULES_SPENT, Value: float64(watts)}
 	}
+	if err := s.Err(); err != nil {
+		log.Printf("Error scanning nvidia-smi output: %s", err)
+	}
 	cmd.Wait()
 }
 
