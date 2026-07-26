@@ -95,8 +95,10 @@
                                 );
                             document.getElementById('eta').innerText =
                                 data.eta;
-                            document.getElementById('description').innerText =
-                                data.description;
+                            if (data.description) {
+                                document.getElementById('description').innerText =
+                                    data.description;
+                            }
                             const lastActive = new Date(data.last_active);
                             document.getElementById('last_active').innerText =
                                 lastActive.toLocaleString();

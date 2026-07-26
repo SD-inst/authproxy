@@ -67,6 +67,7 @@ type ServiceQueue struct {
 	cleanupTimer      *time.Timer
 	cleanupID         int
 	service           SvcType
+	prevService       SvcType
 	waitedService     SvcType
 	CF                *CleanupFunc // executes after await if service changed
 	svcChan           chan<- SvcUpdate
@@ -189,6 +190,7 @@ func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
 		desc = description[0]
 	}
 	log.Printf("*** Setting service to %v ***", s)
+	sq.prevService = sq.service
 	switch s {
 	case WAIT:
 		if sq.service != WAIT && sq.service != NONE {
@@ -207,6 +209,14 @@ func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
 	}
 	sq.cv.Broadcast()
 	sq.svcChan <- SvcUpdate{Type: sq.service, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: desc}
+}
+
+func (sq *ServiceQueue) UpdateProgressDescription(description string) bool {
+	if sq.service == NONE {
+		return false
+	}
+	sq.svcChan <- SvcUpdate{Type: sq.service, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: description}
+	return true
 }
 
 func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {

@@ -96,6 +96,12 @@ func (p *progress) updater() {
 			if eta < 1 && sdp.State.SamplingStep > 0 { // don't compare floats pls
 				eta = time.Duration(float64(time.Since(jobStart)) * (float64(sdp.State.SamplingSteps)/float64(sdp.State.SamplingStep) - 1))
 			}
+			desc := fmt.Sprintf("%s %d/%d steps", "rendering", sdp.State.SamplingStep, sdp.State.SamplingSteps)
+			updateDesc := p.sq.UpdateProgressDescription(desc)
+			descForBroadcast := desc
+			if !updateDesc {
+				descForBroadcast = ""
+			}
 			p.b.Broadcast(events.Packet{
 				Type: events.PROGRESS_UPDATE,
 				Data: ProgressUpdate{
@@ -103,7 +109,7 @@ func (p *progress) updater() {
 					Queued:       sdp.QueueSize,
 					Progress:     sdp.Progress,
 					ETA:          eta.Truncate(time.Second).String(),
-					Description:  fmt.Sprintf("%s %d/%d steps", "rendering", sdp.State.SamplingStep, sdp.State.SamplingSteps),
+					Description:  descForBroadcast,
 					LastActive:   time.Now(),
 					TaskDuration: time.Since(jobStart).Truncate(time.Second).String(),
 				}})
@@ -149,15 +155,19 @@ func (p *progress) gpuStatus() {
 }
 
 func (p *progress) serviceUpdater() {
+	var lastDescription string
 	for svc := range p.svcChan {
 		resp := p.b.State(events.SERVICE_UPDATE)
 		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue}
 		if svc.Description != "" {
 			event.Description = svc.Description
+			lastDescription = svc.Description
 		} else if pkt, ok := resp.(events.Packet); ok && pkt.Type == events.SERVICE_UPDATE {
 			if prevSvc, ok := pkt.Data.(events.ServiceUpdate); ok {
 				event.Description = prevSvc.Description
 			}
+		} else {
+			event.Description = lastDescription
 		}
 		if pkt, ok := resp.(events.Packet); ok && pkt.Type == events.SERVICE_UPDATE {
 			prevSvc := pkt.Data.(events.ServiceUpdate)

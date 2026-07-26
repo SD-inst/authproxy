@@ -27,6 +27,7 @@ func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL
 				sq.WaitForCleanup(time.Second * 20)
 			},
 			Service: servicequeue.CUI}
+		sq.SetService(servicequeue.CUI, "preparing...")
 		return nil
 	})
 	e.POST("/cui/leave", func(c echo.Context) error {
