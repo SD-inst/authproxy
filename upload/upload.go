@@ -28,7 +28,7 @@ import (
 //go:embed webroot
 var webroot embed.FS
 
-const civitaiToken = "__Secure-civitai-token"
+const civitaiToken = "__Secure-civ-token"
 
 type dlTask struct {
 	link string
