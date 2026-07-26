@@ -64,8 +64,6 @@ type progress struct {
 	svcChan             <-chan servicequeue.SvcUpdate
 	pchan               chan sdprogress
 	statusToken         string
-	lastPrevService     servicequeue.SvcType
-	lastPrevWaitService servicequeue.SvcType
 	sq                  *servicequeue.ServiceQueue
 }
 
@@ -156,6 +154,8 @@ func (p *progress) gpuStatus() {
 
 func (p *progress) serviceUpdater() {
 	var lastDescription string
+	var lastPrevService servicequeue.SvcType
+	var lastPrevWaitService servicequeue.SvcType
 	for svc := range p.svcChan {
 		resp := p.b.State(events.SERVICE_UPDATE)
 		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue}
@@ -179,12 +179,12 @@ func (p *progress) serviceUpdater() {
 				event.PrevService = prevSvc.Service
 				event.PrevWaitService = prevSvc.WaitService
 			} else {
-				event.PrevService = p.lastPrevService
-				event.PrevWaitService = p.lastPrevWaitService
+				event.PrevService = lastPrevService
+				event.PrevWaitService = lastPrevWaitService
 			}
 		}
-		p.lastPrevService = event.PrevService
-		p.lastPrevWaitService = event.PrevWaitService
+		lastPrevService = event.PrevService
+		lastPrevWaitService = event.PrevWaitService
 		p.b.Broadcast(events.Packet{Type: events.SERVICE_UPDATE, Data: event})
 	}
 }
