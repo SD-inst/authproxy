@@ -71,7 +71,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 						model = req.Model
 					}
 				}
-				sq.AwaitWithPredicate(servicequeue.LLM, true, func() bool {
+				sq.AwaitWithPredicateAndDescription(servicequeue.LLM, true, func() bool {
 					if apiKey != prevKey {
 						log.Printf("API key mismatch: '%s' != '%s'", apiKey, prevKey)
 					}
@@ -79,11 +79,10 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 						log.Printf("Model mismatch: '%s' != '%s'", model, prevModel)
 					}
 					return apiKey == prevKey && (result.model == "" || prevModel == model)
-				})
+				}, model)
 				// don't need to make it a CV as we rely on service queue mutex
 				result.apiKey = apiKey
 				result.model = model
-				sq.SendDescriptionUpdate(servicequeue.LLM, model)
 			} else {
 				sq.Await(servicequeue.LLM, false)
 			}

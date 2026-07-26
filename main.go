@@ -152,7 +152,7 @@ func main() {
 		sq.SetCleanupProgress(true)
 		return nil
 	})
-	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken)
+	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken, sq)
 	pr.AddHandlers(e)
 	pr.Start(sq)
 	llmurl, err := url.Parse(LLM_URL)

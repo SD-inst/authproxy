@@ -12,6 +12,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	e.POST("/acestep/join", func(c echo.Context) error {
 		sq.Lock()
 		sq.AwaitReent(servicequeue.ACESTEP)
+		sq.SetService(servicequeue.ACESTEP, "working")
 		sq.Unlock()
 		sq.SetCleanup(time.Minute)
 		return nil
@@ -27,6 +28,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	e.POST("/acestep15/join", func(c echo.Context) error {
 		sq.Lock()
 		sq.AwaitReent(servicequeue.ACESTEP15)
+		sq.SetService(servicequeue.ACESTEP15, "working")
 		sq.CF = &servicequeue.CleanupFunc{
 			F: func() {
 				cleanupClient.Post(AS15_URL+"/unload_llm", echo.MIMEApplicationJSON, nil)

@@ -18,6 +18,7 @@ func newTTSProxy(ttsurl *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog.Wa
 				sq.Lock()
 				defer sq.Unlock()
 				sq.AwaitReent(servicequeue.TTS)
+				sq.SetService(servicequeue.TTS, "working")
 				sq.CF = &servicequeue.CleanupFunc{
 					F: func() {
 						wd.Send("restart tts")

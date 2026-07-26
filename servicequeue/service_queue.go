@@ -86,23 +86,24 @@ func NewServiceQueue(svcChan chan<- SvcUpdate) *ServiceQueue {
 
 // caller should lock and unlock sq, returns true if service has been changed or false if it was the same
 func (sq *ServiceQueue) AwaitReent(t SvcType) bool {
-	return sq.AwaitWithPredicate(t, true, nil)
+	return sq.AwaitWithPredicateAndDescription(t, true, nil, "")
 }
 
 // allowReent finishes waiting if the service is already t, otherwise it waits for NONE
 func (sq *ServiceQueue) Await(t SvcType, allowReent bool) bool {
-	return sq.AwaitWithPredicate(t, allowReent, nil)
+	return sq.AwaitWithPredicateAndDescription(t, allowReent, nil, "")
 }
 
-func (sq *ServiceQueue) AwaitWithPredicate(t SvcType, allowReent bool, p WaitPredicate) bool {
+func (sq *ServiceQueue) AwaitWithPredicateAndDescription(t SvcType, allowReent bool, p WaitPredicate, description string) bool {
 	sq.AwaitCheck(t, allowReent, true, p)
 	if sq.service == t { // shouldn't happen if allowReent is false
 		log.Printf("*** Service is already %v, proceeding ***", t)
+		sq.SetService(t, description)
 		sq.CancelCleanup()
 		return false
 	}
 	log.Printf("*** Service is %v, changing to %v ***", sq.service, t)
-	sq.SetService(t)
+	sq.SetService(t, description)
 	if sq.CF != nil && sq.CF.F != nil && sq.CF.Service != t {
 		log.Printf("*** Running cleanup func ***")
 		sq.CF.F()
@@ -182,7 +183,11 @@ func (sq *ServiceQueue) SendDescriptionUpdate(t SvcType, description string) {
 }
 
 // should be called under lock
-func (sq *ServiceQueue) SetService(s SvcType) {
+func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
+	desc := ""
+	if len(description) > 0 {
+		desc = description[0]
+	}
 	log.Printf("*** Setting service to %v ***", s)
 	switch s {
 	case WAIT:
@@ -201,7 +206,7 @@ func (sq *ServiceQueue) SetService(s SvcType) {
 		sq.service = s
 	}
 	sq.cv.Broadcast()
-	sq.svcChan <- SvcUpdate{Type: sq.service, WaitType: sq.waitedService, Queue: sq.waitqueue.Load()}
+	sq.svcChan <- SvcUpdate{Type: sq.service, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: desc}
 }
 
 func (sq *ServiceQueue) ServiceCloser(t SvcType, pathChecker func(path string) bool, timeout time.Duration, closeOnBody bool) func(req *http.Request, resp *http.Response) error {

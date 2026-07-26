@@ -66,10 +66,11 @@ type progress struct {
 	statusToken         string
 	lastPrevService     servicequeue.SvcType
 	lastPrevWaitService servicequeue.SvcType
+	sq                  *servicequeue.ServiceQueue
 }
 
-func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken}
+func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string, sq *servicequeue.ServiceQueue) *progress {
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq}
 }
 
 func (p *progress) updater() {
@@ -150,7 +151,14 @@ func (p *progress) gpuStatus() {
 func (p *progress) serviceUpdater() {
 	for svc := range p.svcChan {
 		resp := p.b.State(events.SERVICE_UPDATE)
-		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue, Description: svc.Description}
+		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue}
+		if svc.Description != "" {
+			event.Description = svc.Description
+		} else if pkt, ok := resp.(events.Packet); ok && pkt.Type == events.SERVICE_UPDATE {
+			if prevSvc, ok := pkt.Data.(events.ServiceUpdate); ok {
+				event.Description = prevSvc.Description
+			}
+		}
 		if pkt, ok := resp.(events.Packet); ok && pkt.Type == events.SERVICE_UPDATE {
 			prevSvc := pkt.Data.(events.ServiceUpdate)
 			if svc.Type == servicequeue.IGNORE {
@@ -198,6 +206,7 @@ func (p *progress) handleCUIProgress(c echo.Context) error {
 	}
 	c.Bind(&params)
 	p.pchan <- sdprogress{Progress: params.Value / params.Max, QueueSize: params.Queue - 1, State: sdprogressState{Job: &params.Job, SamplingSteps: int(params.Max), SamplingStep: int(params.Value), JobCount: 1}}
+	p.sq.SetService(servicequeue.CUI, fmt.Sprintf("rendering %d/%d steps", int(params.Value), int(params.Max)))
 	return nil
 }
 
