@@ -59,16 +59,25 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 				body, err := io.ReadAll(c.Request().Body)
 				c.Request().Body = io.NopCloser(bytes.NewBuffer(body))
 				model := ""
-				if err != nil {
-					log.Printf("Error reading LLM request body: %s", err)
-				} else {
-					req := struct {
-						Model string
-					}{}
-					if err := json.Unmarshal(body, &req); err != nil {
-						log.Printf("Error parsing LLM request body: %s", err)
+				path := c.Request().URL.Path
+				if m, ok := strings.CutPrefix(path, "/upstream/"); ok {
+					model = m
+					if idx := strings.Index(model, "/v1/"); idx >= 0 {
+						model = model[:idx]
+					}
+				}
+				if model == "" {
+					if err != nil {
+						log.Printf("Error reading LLM request body: %s", err)
 					} else {
-						model = req.Model
+						req := struct {
+							Model string
+						}{}
+						if err := json.Unmarshal(body, &req); err != nil {
+							log.Printf("Error parsing LLM request body: %s", err)
+						} else {
+							model = req.Model
+						}
 					}
 				}
 				sq.AwaitWithPredicateAndDescription(servicequeue.LLM, true, func() bool {
