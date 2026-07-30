@@ -22,6 +22,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/civitai"
 	"github.com/rkfg/authproxy/events"
+	"github.com/rkfg/authproxy/huggingface"
 	"github.com/rkfg/authproxy/metrics"
 )
 
@@ -43,6 +44,7 @@ type uploader struct {
 	dlclient   http.Client
 	cookieFile string
 	civitdl    *civitai.Downloader
+	hfdl       *huggingface.Downloader
 	m          chan<- metrics.MetricUpdate
 }
 
@@ -216,8 +218,17 @@ func (u *uploader) download(c echo.Context) error {
 		u.dlError("Invalid URL: %s", err.Error())
 		return nil
 	}
+	if cu.Host == "huggingface.co" || cu.Host == "www.huggingface.co" {
+		downloadURL, _, err := u.hfdl.GetDownloadURL(params.URL)
+		if err != nil {
+			u.dlError("Hugging Face error: %s", err)
+			return nil
+		}
+		u.dlc <- dlTask{link: downloadURL, dir: params.Dir}
+		return nil
+	}
 	if cu.Host != "civitai.com" && cu.Host != "civitai.red" {
-		u.dlError("Only civitai.com and civitai.red is supported")
+		u.dlError("Only civitai.com, civitai.red, and huggingface.co are supported")
 		return nil
 	}
 	m := modelRegex.FindStringSubmatch(cu.Path)
@@ -424,7 +435,7 @@ func (u *uploader) downloadFile(c echo.Context) error {
 
 func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *events.Broker, m chan<- metrics.MetricUpdate) *uploader {
 	os.MkdirAll(rootPath, 0755)
-	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile, civitdl: civitai.NewDownloader(), m: m}
+	result := uploader{root: rootPath, broker: broker, dlc: make(chan dlTask), cookieFile: cookieFile, civitdl: civitai.NewDownloader(), hfdl: huggingface.NewDownloader(), m: m}
 	result.pageclient.Timeout = time.Second * 30
 	result.loadCookies()
 	go result.cookieRefresher()
