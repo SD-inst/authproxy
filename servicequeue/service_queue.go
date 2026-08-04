@@ -55,9 +55,9 @@ type CleanupFunc struct {
 }
 
 type SvcUpdate struct {
-	Type      SvcType
-	WaitType  SvcType
-	Queue     int32
+	Type        SvcType
+	WaitType    SvcType
+	Queue       int32
 	Description string
 }
 
@@ -189,7 +189,9 @@ func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
 	if len(description) > 0 {
 		desc = description[0]
 	}
-	log.Printf("*** Setting service to %v ***", s)
+	if sq.service != s {
+		log.Printf("*** Setting service to %v ***", s)
+	}
 	sq.prevService = sq.service
 	switch s {
 	case WAIT:
