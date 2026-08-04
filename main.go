@@ -118,6 +118,9 @@ func main() {
 		},
 	}))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
+		Skipper: func(c echo.Context) bool {
+			return c.Path() == "/q/status.json"
+		},
 		LogRemoteIP:     true,
 		LogURI:          true,
 		LogMethod:       true,
