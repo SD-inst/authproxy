@@ -119,7 +119,7 @@ func main() {
 	}))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
 		Skipper: func(c echo.Context) bool {
-			return c.Path() == "/q/status.json"
+			return c.Path() == "/q/status.json" || c.Path() == "/metrics"
 		},
 		LogRemoteIP:     true,
 		LogURI:          true,
