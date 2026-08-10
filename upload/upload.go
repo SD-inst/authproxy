@@ -31,6 +31,8 @@ var webroot embed.FS
 
 const civitaiToken = "__Secure-civ-token"
 
+const maxCivitaiDownloadSize = 2 * 1024 * 1024 * 1024 // 2 GB
+
 type dlTask struct {
 	link string
 	dir  string
@@ -63,8 +65,9 @@ type fileItem struct {
 }
 
 var (
-	validateRegexp = regexp.MustCompile(`[*<>]`)
-	modelRegex     = regexp.MustCompile(`/models/(\d+)`)
+	validateRegexp         = regexp.MustCompile(`[*<>]`)
+	modelRegex             = regexp.MustCompile(`/models/(\d+)`)
+	civitaiDownloadRegex   = regexp.MustCompile(`/api/download/models/(\d+)`)
 )
 
 func JSONOk(c echo.Context, r interface{}) error {
@@ -203,6 +206,41 @@ func modelAllowed(modelType string) bool {
 	return t == "lora" || t == "locon" || t == "dora"
 }
 
+func checkCivitaiDownloadURL(rawURL string) (string, error) {
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		location := resp.Header.Get("Location")
+		if location == "" {
+			return "", fmt.Errorf("no redirect location")
+		}
+		finalURL, err := resp.Request.URL.Parse(location)
+		if err != nil {
+			return "", err
+		}
+		return finalURL.String(), nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download URL returned status %d", resp.StatusCode)
+	}
+	return rawURL, nil
+}
+
 func (u *uploader) download(c echo.Context) error {
 	var params struct {
 		URL string `form:"url"`
@@ -229,6 +267,34 @@ func (u *uploader) download(c echo.Context) error {
 	}
 	if cu.Host != "civitai.com" && cu.Host != "civitai.red" {
 		u.dlError("Only civitai.com, civitai.red, and huggingface.co are supported")
+		return nil
+	}
+	if strings.Contains(cu.Path, "/api/download/models/") {
+		if cu.Query().Get("fileId") == "" {
+			u.dlError("Missing fileId parameter")
+			return nil
+		}
+		downloadURL, err := checkCivitaiDownloadURL(params.URL)
+		if err != nil {
+			u.dlError("Error resolving download URL: %s", err)
+			return nil
+		}
+		req, err := http.NewRequest("HEAD", downloadURL, nil)
+		if err != nil {
+			u.dlError("Error creating request: %s", err)
+			return nil
+		}
+		resp, err := u.dlclient.Do(req)
+		if err != nil {
+			u.dlError("Error checking file size: %s", err)
+			return nil
+		}
+		resp.Body.Close()
+		if resp.ContentLength > maxCivitaiDownloadSize {
+			u.dlError("File too large: %.2f GB (max 2 GB)", float64(resp.ContentLength)/(1024*1024*1024))
+			return nil
+		}
+		u.dlc <- dlTask{link: downloadURL, dir: params.Dir}
 		return nil
 	}
 	m := modelRegex.FindStringSubmatch(cu.Path)
