@@ -184,3 +184,16 @@ func (l *llmbalancer) startMetricCollection() {
 func (l *llmbalancer) forbidden(c echo.Context) error {
 	return JSONErrorMessage(c, 403, "forbidden")
 }
+
+func (l *llmbalancer) lookup(c echo.Context) error {
+	return c.JSON(http.StatusOK, []string{})
+}
+
+func (l *llmbalancer) tools(c echo.Context) error {
+	return c.JSON(http.StatusForbidden, map[string]any{
+		"error": map[string]string{
+			"message": "this feature is disabled",
+			"type":    "feature_disabled",
+		},
+	})
+}
