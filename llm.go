@@ -194,9 +194,17 @@ func (l *llmbalancer) startMetricCollection() {
 				break
 			}
 			for _, m := range rows {
+				// The server may return more rows than the requested
+				// [min_id, max_id] range (older llama-swap versions ignore
+				// min_id), so dedup on the client side against the high-water
+				// mark: only rows newer than lastID are processed.
+				if m.ID <= uint64(lastID) {
+					continue
+				}
 				ts, perr := time.Parse(time.RFC3339Nano, m.Timestamp)
 				if perr != nil {
 					log.Printf("Error parsing timestamp %s: %s", m.Timestamp, perr)
+					continue
 				}
 				if ts.After(cutoff) {
 					log.Printf("Tokens generated: %d", m.Tokens.OutputTokens)
