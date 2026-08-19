@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -133,6 +136,18 @@ type metricType struct {
 	DurationMS uint64 `json:"duration_ms"`
 }
 
+// activityEventID is the payload of an "activity" SSE event (llama-swap v240+):
+// only the store row id; the full row is fetched from /api/metrics/activity.
+type activityEventID struct {
+	ID int `json:"id"`
+}
+
+// activityPage is the response envelope of GET /api/metrics/activity.
+type activityPage struct {
+	Data  []metricType `json:"data"`
+	Total int          `json:"total"`
+}
+
 func (l *llmbalancer) startMetricCollection() {
 	var stream *eventsource.Stream
 	var err error
@@ -144,6 +159,7 @@ func (l *llmbalancer) startMetricCollection() {
 		time.Sleep(time.Second * 5)
 	}
 	cutoff := time.Now()
+	var lastID int
 	for {
 		select {
 		case event := <-stream.Events:
@@ -156,29 +172,74 @@ func (l *llmbalancer) startMetricCollection() {
 				log.Printf("Error unmarshalling event: %s; error: %s", event.Data(), err)
 				break
 			}
-			if e.Type != "metrics" {
+			// llama-swap v240+: activity events are named "activity" and carry
+			// only a row id; the row (with tokens) is fetched from the activity API.
+			if e.Type != "activity" {
 				break
 			}
-			marr := []metricType{}
-			err = json.Unmarshal([]byte(e.Data), &marr)
+			var evt activityEventID
+			err = json.Unmarshal([]byte(e.Data), &evt)
 			if err != nil {
-				log.Printf("Error unmarshalling metric: %s; error: %s", e.Data, err)
+				log.Printf("Error unmarshalling activity event: %s; error: %s", e.Data, err)
 				break
 			}
-			for _, m := range marr {
-				ts, err := time.Parse(time.RFC3339Nano, m.Timestamp)
-				if err != nil {
-					log.Printf("Error parsing timestamp %s: %s", m.Timestamp, err)
+			// High-water mark: skip rows we already processed and pick up rows
+			// for events we missed (e.g. SSE reconnect).
+			if evt.ID <= lastID {
+				break
+			}
+			rows, err := l.fetchActivityRows(lastID+1, evt.ID)
+			if err != nil {
+				log.Printf("Error fetching activity rows: %s", err)
+				break
+			}
+			for _, m := range rows {
+				ts, perr := time.Parse(time.RFC3339Nano, m.Timestamp)
+				if perr != nil {
+					log.Printf("Error parsing timestamp %s: %s", m.Timestamp, perr)
 				}
 				if ts.After(cutoff) {
 					log.Printf("Tokens generated: %d", m.Tokens.OutputTokens)
 					l.metricUpdater <- metrics.MetricUpdate{Type: metrics.LLM_TOKENS, Value: float64(m.Tokens.OutputTokens)}
 				}
 			}
+			lastID = evt.ID
 		case err := <-stream.Errors:
 			log.Printf("Error: %s", err)
 		}
 	}
+}
+
+// fetchActivityRows returns activity rows with ids in [minID, maxID] from
+// llama-swap's GET /api/metrics/activity endpoint (llama-swap v240+).
+func (l *llmbalancer) fetchActivityRows(minID, maxID int) ([]metricType, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	u := l.target.JoinPath("/api/metrics/activity")
+	q := u.Query()
+	q.Set("min_id", strconv.Itoa(minID))
+	q.Set("max_id", strconv.Itoa(maxID))
+	q.Set("limit", "999")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := l.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("activity API returned status %d", resp.StatusCode)
+	}
+	var page activityPage
+	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+		return nil, err
+	}
+	return page.Data, nil
 }
 
 func (l *llmbalancer) forbidden(c echo.Context) error {
