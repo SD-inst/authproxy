@@ -74,49 +74,124 @@ func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog
 func (p *progress) updater() {
 	lastProgress := float64(0)
 	lastID := ""
-	jobStart := time.Now()
-	for sdp := range p.pchan {
-		if sdp.State.Job == nil {
-			continue
+	jobStart := time.Time{}
+	lastStep := 0
+	lastStepTs := time.Time{}
+	adjustedJobStart := time.Time{}
+	lastTotal := 0
+	lastJobCount := 0
+	lastQueue := 0
+	lastProg := float64(0)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	// Remaining ETA: rate from the last step update (with the first step
+	// re-timed to the second when it was much faster), aged down each second
+	// until the next update. Returns ok=false when there is no baseline yet.
+	computeEta := func(now time.Time) (time.Duration, bool) {
+		if lastStep <= 0 || lastStepTs.IsZero() {
+			return 0, false
 		}
-		if lastID != *sdp.State.Job {
+		start := jobStart
+		if !adjustedJobStart.IsZero() {
+			start = adjustedJobStart
+		}
+		elapsed := lastStepTs.Sub(start)
+		if elapsed <= 0 {
+			return 0, false
+		}
+		timePerStep := elapsed / time.Duration(lastStep)
+		remaining := time.Duration(lastTotal-lastStep) * timePerStep
+		age := now.Sub(lastStepTs)
+		if age < 0 {
+			age = 0
+		}
+		eta := remaining - age
+		if eta < 0 {
+			eta = 0
+		}
+		return eta, true
+	}
+
+	broadcast := func(desc string) {
+		now := time.Now()
+		etaStr := ""
+		if eta, ok := computeEta(now); ok {
+			etaStr = eta.Truncate(time.Second).String()
+		}
+		p.b.Broadcast(events.Packet{
+			Type: events.PROGRESS_UPDATE,
+			Data: ProgressUpdate{
+				Current:      lastJobCount,
+				Queued:       lastQueue,
+				Progress:     lastProg,
+				ETA:          etaStr,
+				Description:  desc,
+				LastActive:   now,
+				TaskDuration: now.Sub(jobStart).Truncate(time.Second).String(),
+			}})
+	}
+
+	for {
+		select {
+		case sdp := <-p.pchan:
+			if sdp.State.Job == nil {
+				continue
+			}
+			if lastID != *sdp.State.Job {
+				if lastID != "" {
+					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
+				}
+				if *sdp.State.Job != "" {
+					p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
+					jobStart = time.Now()
+				}
+				lastStep = 0
+				lastStepTs = time.Time{}
+				adjustedJobStart = time.Time{}
+				lastTotal = 0
+				lastProgress = 0
+				lastID = *sdp.State.Job
+			}
+			lastJobCount = sdp.State.JobCount
+			lastQueue = sdp.QueueSize
+			lastProg = sdp.Progress
+			lastTotal = sdp.State.SamplingSteps
+			if sdp.State.SamplingStep != lastStep {
+				now := time.Now()
+				// First step is often slower (warmup). If the second step is
+				// significantly faster, re-time the first step to match it by
+				// shifting the job start forward by the difference.
+				if lastStep == 1 && sdp.State.SamplingStep-1 >= 1 {
+					firstDur := lastStepTs.Sub(jobStart)
+					secondRate := now.Sub(lastStepTs) / time.Duration(sdp.State.SamplingStep-1)
+					if firstDur > 0 && secondRate > 0 && 10*secondRate <= 9*firstDur {
+						adjustedJobStart = jobStart.Add(firstDur - secondRate)
+					}
+				}
+				lastStep = sdp.State.SamplingStep
+				lastStepTs = now
+			}
+			if lastProgress != sdp.Progress {
+				desc := fmt.Sprintf("%s %d/%d steps", "rendering", sdp.State.SamplingStep, sdp.State.SamplingSteps)
+				updateDesc := p.sq.UpdateProgressDescription(desc)
+				descForBroadcast := desc
+				if !updateDesc {
+					descForBroadcast = ""
+				}
+				broadcast(descForBroadcast)
+				lastProgress = sdp.Progress
+				p.m <- metrics.MetricUpdate{Type: metrics.QUEUE_LENGTH, Value: float64(sdp.QueueSize)}
+			}
+			if p.wd != nil && time.Since(jobStart) > p.timeout && sdp.Progress > 0 {
+				log.Printf("Task execution time exceeded %s, restarting", p.timeout.String())
+				p.wd.Send("restart stablediff-cuda")
+			}
+		case <-ticker.C:
+			// Tick the ETA/duration down each second while a job is running.
 			if lastID != "" {
-				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
+				broadcast("")
 			}
-			if *sdp.State.Job != "" {
-				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
-				jobStart = time.Now()
-			}
-			lastID = *sdp.State.Job
-		}
-		if lastProgress != sdp.Progress {
-			eta := time.Duration(sdp.EtaRelative * float64(time.Second))
-			if eta < 1 && sdp.State.SamplingStep > 0 { // don't compare floats pls
-				eta = time.Duration(float64(time.Since(jobStart)) * (float64(sdp.State.SamplingSteps)/float64(sdp.State.SamplingStep) - 1))
-			}
-			desc := fmt.Sprintf("%s %d/%d steps", "rendering", sdp.State.SamplingStep, sdp.State.SamplingSteps)
-			updateDesc := p.sq.UpdateProgressDescription(desc)
-			descForBroadcast := desc
-			if !updateDesc {
-				descForBroadcast = ""
-			}
-			p.b.Broadcast(events.Packet{
-				Type: events.PROGRESS_UPDATE,
-				Data: ProgressUpdate{
-					Current:      sdp.State.JobCount,
-					Queued:       sdp.QueueSize,
-					Progress:     sdp.Progress,
-					ETA:          eta.Truncate(time.Second).String(),
-					Description:  descForBroadcast,
-					LastActive:   time.Now(),
-					TaskDuration: time.Since(jobStart).Truncate(time.Second).String(),
-				}})
-			lastProgress = sdp.Progress
-			p.m <- metrics.MetricUpdate{Type: metrics.QUEUE_LENGTH, Value: float64(sdp.QueueSize)}
-		}
-		if p.wd != nil && time.Since(jobStart) > p.timeout && sdp.Progress > 0 {
-			log.Printf("Task execution time exceeded %s, restarting", p.timeout.String())
-			p.wd.Send("restart stablediff-cuda")
 		}
 	}
 }
