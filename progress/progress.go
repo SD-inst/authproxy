@@ -77,32 +77,36 @@ func (p *progress) updater() {
 	jobStart := time.Time{}
 	lastStep := 0
 	lastStepTs := time.Time{}
+	stepObs := 0
 	adjustedJobStart := time.Time{}
-	lastTotal := 0
+	lastProgTs := time.Time{}
 	lastJobCount := 0
 	lastQueue := 0
 	lastProg := float64(0)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	// Remaining ETA: rate from the last step update (with the first step
-	// re-timed to the second when it was much faster), aged down each second
-	// until the next update. Returns ok=false when there is no baseline yet.
+	// Remaining ETA, based on the overall progress fraction (which A1111
+	// reports continuously across all tasks of a batch, e.g. 4 tiles = 4x25%).
+	// The per-task sampling_step/sampling_steps reset each task and would make
+	// the ETA jump, so we use the batch-wide progress instead. The first
+	// increment (often model loading) is re-timed via adjustedJobStart. The
+	// estimate is aged down each second until the next update. ok=false when
+	// there is no baseline yet.
 	computeEta := func(now time.Time) (time.Duration, bool) {
-		if lastStep <= 0 || lastStepTs.IsZero() {
+		if lastProg <= 0 || lastProg >= 1 || lastProgTs.IsZero() {
 			return 0, false
 		}
 		start := jobStart
 		if !adjustedJobStart.IsZero() {
 			start = adjustedJobStart
 		}
-		elapsed := lastStepTs.Sub(start)
+		elapsed := lastProgTs.Sub(start)
 		if elapsed <= 0 {
 			return 0, false
 		}
-		timePerStep := elapsed / time.Duration(lastStep)
-		remaining := time.Duration(lastTotal-lastStep) * timePerStep
-		age := now.Sub(lastStepTs)
+		remaining := time.Duration(float64(elapsed) * (1 - lastProg) / lastProg)
+		age := now.Sub(lastProgTs)
 		if age < 0 {
 			age = 0
 		}
@@ -148,25 +152,35 @@ func (p *progress) updater() {
 				}
 				lastStep = 0
 				lastStepTs = time.Time{}
+				stepObs = 0
 				adjustedJobStart = time.Time{}
-				lastTotal = 0
-				lastProgress = 0
 				lastID = *sdp.State.Job
 			}
 			lastJobCount = sdp.State.JobCount
 			lastQueue = sdp.QueueSize
+			if sdp.Progress != lastProg {
+				lastProgTs = time.Now()
+			}
 			lastProg = sdp.Progress
-			lastTotal = sdp.State.SamplingSteps
 			if sdp.State.SamplingStep != lastStep {
 				now := time.Now()
-				// First step is often slower (warmup). If the second step is
-				// significantly faster, re-time the first step to match it by
-				// shifting the job start forward by the difference.
-				if lastStep == 1 && sdp.State.SamplingStep-1 >= 1 {
-					firstDur := lastStepTs.Sub(jobStart)
-					secondRate := now.Sub(lastStepTs) / time.Duration(sdp.State.SamplingStep-1)
-					if firstDur > 0 && secondRate > 0 && 10*secondRate <= 9*firstDur {
-						adjustedJobStart = jobStart.Add(firstDur - secondRate)
+				if sdp.State.SamplingStep > lastStep {
+					stepObs++
+					// The first observed increment often includes model
+					// loading. On the second observation, re-time it to the
+					// second's per-step rate when that is significantly
+					// faster (10% threshold), regardless of how many steps
+					// each poll jumped.
+					if stepObs == 2 {
+						firstDur := lastStepTs.Sub(jobStart)
+						secondDur := now.Sub(lastStepTs)
+						if firstDur > 0 && secondDur > 0 {
+							firstRate := firstDur / time.Duration(lastStep)
+							secondRate := secondDur / time.Duration(sdp.State.SamplingStep-lastStep)
+							if secondRate > 0 && 10*secondRate <= 9*firstRate {
+								adjustedJobStart = jobStart.Add(firstDur - time.Duration(lastStep)*secondRate)
+							}
+						}
 					}
 				}
 				lastStep = sdp.State.SamplingStep
