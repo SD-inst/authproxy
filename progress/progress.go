@@ -43,6 +43,7 @@ type GPUUpdate struct {
 type sdprogressState struct {
 	JobTimestamp  string  `json:"job_timestamp"`
 	Job           *string `json:"job"`
+	Node          string  `json:"node"`
 	JobCount      int     `json:"job_count"`
 	SamplingSteps int     `json:"sampling_steps"`
 	SamplingStep  int     `json:"sampling_step"`
@@ -56,15 +57,15 @@ type sdprogress struct {
 }
 
 type progress struct {
-	b                   *events.Broker
-	sdhost              string
-	wd                  *watchdog.Watchdog
-	timeout             time.Duration
-	m                   chan<- metrics.MetricUpdate
-	svcChan             <-chan servicequeue.SvcUpdate
-	pchan               chan sdprogress
-	statusToken         string
-	sq                  *servicequeue.ServiceQueue
+	b           *events.Broker
+	sdhost      string
+	wd          *watchdog.Watchdog
+	timeout     time.Duration
+	m           chan<- metrics.MetricUpdate
+	svcChan     <-chan servicequeue.SvcUpdate
+	pchan       chan sdprogress
+	statusToken string
+	sq          *servicequeue.ServiceQueue
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string, sq *servicequeue.ServiceQueue) *progress {
@@ -75,10 +76,12 @@ func (p *progress) updater() {
 	lastProgress := float64(0)
 	lastID := ""
 	jobStart := time.Time{}
+	nodeStart := time.Time{}
+	adjustedNodeStart := time.Time{}
+	lastNode := ""
 	lastStep := 0
 	lastStepTs := time.Time{}
 	stepObs := 0
-	adjustedJobStart := time.Time{}
 	lastProgTs := time.Time{}
 	lastJobCount := 0
 	lastQueue := 0
@@ -86,20 +89,20 @@ func (p *progress) updater() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	// Remaining ETA, based on the overall progress fraction (which A1111
-	// reports continuously across all tasks of a batch, e.g. 4 tiles = 4x25%).
-	// The per-task sampling_step/sampling_steps reset each task and would make
-	// the ETA jump, so we use the batch-wide progress instead. The first
-	// increment (often model loading) is re-timed via adjustedJobStart. The
-	// estimate is aged down each second until the next update. ok=false when
-	// there is no baseline yet.
+	// Remaining ETA, based on the current node's progress fraction. ComfyUI
+	// reports value/max per node (it resets for each node, and node ids arrive
+	// with the progress), A1111 reports a job-wide fraction with no node id, so
+	// the baseline is the node start (nodeStart), re-timed on every node
+	// boundary. The first increment (often model loading) is re-timed via
+	// adjustedNodeStart. The estimate is aged down each second until the next
+	// update. ok=false when there is no baseline yet.
 	computeEta := func(now time.Time) (time.Duration, bool) {
 		if lastProg <= 0 || lastProg >= 1 || lastProgTs.IsZero() {
 			return 0, false
 		}
-		start := jobStart
-		if !adjustedJobStart.IsZero() {
-			start = adjustedJobStart
+		start := nodeStart
+		if !adjustedNodeStart.IsZero() {
+			start = adjustedNodeStart
 		}
 		elapsed := lastProgTs.Sub(start)
 		if elapsed <= 0 {
@@ -150,11 +153,27 @@ func (p *progress) updater() {
 					p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
 					jobStart = time.Now()
 				}
-				lastStep = 0
-				lastStepTs = time.Time{}
-				stepObs = 0
-				adjustedJobStart = time.Time{}
 				lastID = *sdp.State.Job
+			}
+			// Node boundary: ComfyUI sends a per-node id (value/max resets each
+			// node), so the ETA baseline is re-timed on every node. A1111 has
+			// no node id, so the job name stays the boundary (SDF behaviour is
+			// unchanged).
+			nodeKey := *sdp.State.Job
+			if sdp.State.Node != "" {
+				nodeKey = sdp.State.Node
+			}
+			if lastNode != nodeKey {
+				if nodeKey != "" {
+					nodeStart = time.Now()
+					adjustedNodeStart = time.Time{}
+					lastStep = 0
+					lastStepTs = time.Time{}
+					stepObs = 0
+					lastProgTs = time.Time{}
+					lastProg = -1
+				}
+				lastNode = nodeKey
 			}
 			lastJobCount = sdp.State.JobCount
 			lastQueue = sdp.QueueSize
@@ -172,13 +191,13 @@ func (p *progress) updater() {
 					// faster (10% threshold), regardless of how many steps
 					// each poll jumped.
 					if stepObs == 2 {
-						firstDur := lastStepTs.Sub(jobStart)
+						firstDur := lastStepTs.Sub(nodeStart)
 						secondDur := now.Sub(lastStepTs)
 						if firstDur > 0 && secondDur > 0 {
 							firstRate := firstDur / time.Duration(lastStep)
 							secondRate := secondDur / time.Duration(sdp.State.SamplingStep-lastStep)
 							if secondRate > 0 && 10*secondRate <= 9*firstRate {
-								adjustedJobStart = jobStart.Add(firstDur - time.Duration(lastStep)*secondRate)
+								adjustedNodeStart = nodeStart.Add(firstDur - time.Duration(lastStep)*secondRate)
 							}
 						}
 					}
@@ -305,9 +324,10 @@ func (p *progress) handleCUIProgress(c echo.Context) error {
 		Max   float64 `json:"max"`
 		Queue int     `json:"queue"`
 		Job   string  `json:"prompt_id"`
+		Node  string  `json:"node"`
 	}
 	c.Bind(&params)
-	p.pchan <- sdprogress{Progress: params.Value / params.Max, QueueSize: params.Queue - 1, State: sdprogressState{Job: &params.Job, SamplingSteps: int(params.Max), SamplingStep: int(params.Value), JobCount: 1}}
+	p.pchan <- sdprogress{Progress: params.Value / params.Max, QueueSize: params.Queue - 1, State: sdprogressState{Job: &params.Job, Node: params.Node, SamplingSteps: int(params.Max), SamplingStep: int(params.Value), JobCount: 1}}
 	p.sq.SetService(servicequeue.CUI, fmt.Sprintf("rendering %d/%d steps", int(params.Value), int(params.Max)))
 	return nil
 }
