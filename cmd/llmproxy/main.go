@@ -22,6 +22,7 @@ var (
 	listenAddr    = os.Getenv("LLM_PROXY_LISTEN")
 	defaultAPIKey = os.Getenv("LLM_PROXY_DEFAULT_API_KEY")
 	gracePeriod   = parseDuration(os.Getenv("LLM_PROXY_GRACE_PERIOD"), 10*time.Second)
+	holdTimeout   = parseDuration(os.Getenv("LLM_PROXY_HOLD_TIMEOUT"), 120*time.Second)
 )
 
 func parseDuration(s string, def time.Duration) time.Duration {
@@ -42,9 +43,12 @@ type proxyState struct {
 	busy          bool
 	currentModel  string
 	currentAPIKey string
-	inFlight      int // number of in-flight blocking requests
-	releaseTimer  *time.Timer
+	inFlight      int // number of active requests in the current epoch
+	epoch         int // bumped whenever the slot is freed; stale requestDone becomes a no-op
+	releaseTimer  *time.Timer // grace timer, armed after the last request finishes
 	releaseGen    int
+	holdTimer     *time.Timer // hard cap, frees the slot even if an upstream connection is stuck
+	holdGen       int
 }
 
 func newProxyState() *proxyState {
@@ -119,20 +123,24 @@ func getAPIKey(r *http.Request) string {
 	return key
 }
 
-// acquire blocks until this request may proceed.
+// acquire blocks until this request may proceed and returns the epoch of the
+// held slot this request joined.
 // Re-enters if the same api key is active (and the held model is empty or matches).
-// Cancels the release timer so the grace period resets on every new request.
-func (ps *proxyState) acquire(model, apiKey string) {
+// Cancels the release timer so the grace period resets on every new request,
+// and re-arms the hold cap so a stuck upstream connection cannot hold the slot forever.
+func (ps *proxyState) acquire(model, apiKey string) int {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	for {
 		if !ps.busy {
 			ps.busy = true
+			ps.epoch++
 			ps.currentModel = model
 			ps.currentAPIKey = apiKey
 			ps.inFlight = 1
-			return
+			ps.resetHoldTimerLocked()
+			return ps.epoch
 		}
 		// mirrors llm.go predicate: apiKey == prevKey && (result.model == "" || prevModel == model)
 		// a request without a model cannot switch the loaded one, so it joins the current holder
@@ -140,7 +148,8 @@ func (ps *proxyState) acquire(model, apiKey string) {
 			ps.stopReleaseTimerLocked()
 			ps.inFlight++
 			ps.currentModel = model // mirrors result.model = model; may be ""
-			return
+			ps.resetHoldTimerLocked()
+			return ps.epoch
 		}
 		log.Printf("Queueing: model=%s key=%s, held model=%s key=%s",
 			model, redactKey(apiKey), ps.currentModel, redactKey(ps.currentAPIKey))
@@ -151,10 +160,14 @@ func (ps *proxyState) acquire(model, apiKey string) {
 // requestDone is called after the response body has been fully sent.
 // The release is only scheduled by the last request to finish: with a zero
 // delay it releases immediately, otherwise a grace timer is armed.
-func (ps *proxyState) requestDone(delay time.Duration) {
+// A request whose epoch is stale (the hold cap already freed the slot) is a no-op.
+func (ps *proxyState) requestDone(epoch int, delay time.Duration) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
+	if epoch != ps.epoch {
+		return
+	}
 	if ps.inFlight <= 0 {
 		return
 	}
@@ -163,6 +176,7 @@ func (ps *proxyState) requestDone(delay time.Duration) {
 		return
 	}
 
+	ps.stopHoldTimerLocked()
 	ps.stopReleaseTimerLocked()
 	if delay <= 0 {
 		ps.releaseLocked()
@@ -181,9 +195,13 @@ func (ps *proxyState) requestDone(delay time.Duration) {
 	})
 }
 
-// releaseLocked clears the held model/key and wakes waiters. Callers must hold ps.mu.
+// releaseLocked clears the held model/key, invalidates the epoch (so any still
+// finishing request of the old epoch becomes a no-op) and wakes waiters.
+// Callers must hold ps.mu.
 func (ps *proxyState) releaseLocked() {
 	ps.busy = false
+	ps.epoch++
+	ps.inFlight = 0
 	ps.currentModel = ""
 	ps.currentAPIKey = ""
 	ps.cv.Broadcast()
@@ -196,6 +214,36 @@ func (ps *proxyState) stopReleaseTimerLocked() {
 		ps.releaseTimer = nil
 	}
 	ps.releaseGen++
+}
+
+// resetHoldTimerLocked arms the hard cap: after holdTimeout the slot is freed
+// even if in-flight requests never finish (stuck/lingering upstream connection).
+// Callers must hold ps.mu.
+func (ps *proxyState) resetHoldTimerLocked() {
+	ps.stopHoldTimerLocked()
+	ps.holdGen++
+	gen := ps.holdGen
+	ps.holdTimer = time.AfterFunc(holdTimeout, func() {
+		ps.mu.Lock()
+		defer ps.mu.Unlock()
+		if ps.holdGen != gen || !ps.busy {
+			return
+		}
+		log.Printf("Hold timeout: releasing stuck slot, model=%s key=%s",
+			ps.currentModel, redactKey(ps.currentAPIKey))
+		ps.stopHoldTimerLocked()
+		ps.stopReleaseTimerLocked()
+		ps.releaseLocked()
+	})
+}
+
+// stopHoldTimerLocked cancels an armed hold-cap timer. Callers must hold ps.mu.
+func (ps *proxyState) stopHoldTimerLocked() {
+	if ps.holdTimer != nil {
+		ps.holdTimer.Stop()
+		ps.holdTimer = nil
+	}
+	ps.holdGen++
 }
 
 func redactKey(key string) string {
@@ -237,15 +285,17 @@ func newHandler(ps *proxyState, rp *httputil.ReverseProxy) *http.ServeMux {
 		}
 		apiKey := getAPIKey(r)
 
-		ps.acquire(model, apiKey)
+		epoch := ps.acquire(model, apiKey)
 
 		log.Printf("Serving: model=%s", model)
 
 		// ServeHTTP blocks until the upstream body (incl. streaming) is fully sent,
-		// so releasing here is after the response completes.
+		// so releasing here is after the response completes. If the connection
+		// lingers longer than holdTimeout, the hold cap frees the slot first and
+		// this requestDone becomes a no-op (stale epoch).
 		rp.ServeHTTP(w, r)
 
-		ps.requestDone(graceDelay(r))
+		ps.requestDone(epoch, graceDelay(r))
 	})
 
 	serveMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {

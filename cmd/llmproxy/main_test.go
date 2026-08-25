@@ -345,6 +345,102 @@ func TestStubbedLookupAndTools(t *testing.T) {
 	wg.Wait()
 }
 
+// The upstream hangs on a completions request (stuck generation). A queued
+// request with a different key (e.g. the web UI) must still get the slot once
+// the hold cap expires, instead of waiting forever.
+func TestHoldCapReleasesStuckSlot(t *testing.T) {
+	const cap = 400 * time.Millisecond
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/upstream/llama/v1/chat/completions" {
+			time.Sleep(3 * time.Second) // stuck generation: slow to finish
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html>ok</html>")
+	}))
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	oldHold := holdTimeout
+	holdTimeout = cap
+	defer func() { holdTimeout = oldHold }()
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		doRequest(t, proxy.URL, "/upstream/llama/v1/chat/completions", "", "keyA")
+	}()
+	time.Sleep(100 * time.Millisecond) // let the holder acquire
+
+	// The web UI equivalent: different key, no model — queued while keyA holds.
+	req, err := http.NewRequest("GET", proxy.URL+"/upstream/mistral/", nil)
+	if err != nil {
+		t.Fatalf("building GET request: %s", err)
+	}
+	req.Header.Set("Authorization", "keyB")
+	start := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET request failed: %s", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	elapsed := time.Since(start)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET status = %d, want 200", resp.StatusCode)
+	}
+	if string(body) != "<html>ok</html>" {
+		t.Errorf("GET body = %q, want the upstream page", string(body))
+	}
+	if elapsed < cap/2 {
+		t.Errorf("GET was not queued behind the stuck holder: %v", elapsed)
+	}
+	if elapsed > cap+2*time.Second {
+		t.Errorf("GET was not released by the hold cap in bounded time: %v", elapsed)
+	}
+	wg.Wait()
+}
+
+// A request that outlives the hold cap must not disturb the new holder when it
+// finally finishes (its requestDone must be a no-op).
+func TestStaleRequestDoneIsNoOp(t *testing.T) {
+	ps := newProxyState()
+
+	e1 := ps.acquire("llama", "keyA")
+	// simulate the hold cap freeing the slot while the first request is still in flight
+	ps.mu.Lock()
+	ps.releaseLocked()
+	ps.mu.Unlock()
+
+	e2 := ps.acquire("mistral", "keyB")
+	if e1 == e2 {
+		t.Fatalf("epoch was not advanced on release")
+	}
+
+	// the old request finishes after the cap: must be a no-op
+	ps.requestDone(e1, 0)
+	ps.mu.Lock()
+	busy, inFlight := ps.busy, ps.inFlight
+	ps.mu.Unlock()
+	if !busy || inFlight != 1 {
+		t.Fatalf("stale requestDone disturbed the new holder: busy=%v inFlight=%d", busy, inFlight)
+	}
+
+	// the current holder finishes and releases
+	ps.requestDone(e2, 0)
+	ps.mu.Lock()
+	busy, inFlight = ps.busy, ps.inFlight
+	ps.mu.Unlock()
+	if busy || inFlight != 0 {
+		t.Fatalf("holder was not released: busy=%v inFlight=%d", busy, inFlight)
+	}
+}
+
 // extractModel from /upstream/:model/... path
 func TestExtractModelFromPath(t *testing.T) {
 	r := &http.Request{URL: &url.URL{Path: "/upstream/llama-7/v1/chat/completions"}}
