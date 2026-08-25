@@ -79,6 +79,11 @@ func (p *progress) updater() {
 	nodeStart := time.Time{}
 	adjustedNodeStart := time.Time{}
 	lastNode := ""
+	lastCUI := false
+	nodeRefStart := time.Time{}      // last progress of the previous node (gap reference)
+	prevNodeRate := time.Duration(0) // per-step rate of the previous node (first-step prior)
+	nodeStartValue := 0
+	lastMax := 0
 	lastStep := 0
 	lastStepTs := time.Time{}
 	stepObs := 0
@@ -89,26 +94,71 @@ func (p *progress) updater() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	// Remaining ETA, based on the current node's progress fraction. ComfyUI
-	// reports value/max per node (it resets for each node, and node ids arrive
-	// with the progress), A1111 reports a job-wide fraction with no node id, so
-	// the baseline is the node start (nodeStart), re-timed on every node
-	// boundary. The first increment (often model loading) is re-timed via
-	// adjustedNodeStart. The estimate is aged down each second until the next
-	// update. ok=false when there is no baseline yet.
+	// Remaining ETA, computed over the same span the progress fraction covers.
+	//
+	// CUI (ComfyUI): progress is per-node (value/max resets each node), and
+	// nodeStart is the FIRST progress of the node — which arrives after step
+	// nodeStartValue (usually 1). So the elapsed span covers (lastStep -
+	// nodeStartValue) steps, not lastStep; the rate is measured over that span
+	// and remaining is (lastMax - lastStep) steps at that rate. This keeps the
+	// ETA stable from the second step on (like CozyUI).
+	//
+	// A1111 (SDF): no node id, progress is the job-wide fraction, so the
+	// baseline is jobStart and the rate is over the whole job (batch-wide
+	// progress; the per-task sampling_step would make the ETA jump). The first
+	// increment (often model loading) is re-timed via adjustedNodeStart.
+	//
+	// The estimate is aged down each second until the next update. ok=false
+	// when there is no baseline yet.
 	computeEta := func(now time.Time) (time.Duration, bool) {
-		if lastProg <= 0 || lastProg >= 1 || lastProgTs.IsZero() {
+		if lastProgTs.IsZero() {
 			return 0, false
 		}
-		start := nodeStart
-		if !adjustedNodeStart.IsZero() {
-			start = adjustedNodeStart
+		var elapsed time.Duration
+		var remaining time.Duration
+		if lastCUI {
+			units := lastStep - nodeStartValue
+			if units < 0 {
+				return 0, false
+			}
+			if units == 0 {
+				// Only the first step is known and there is no measured span
+				// yet. Estimate the first step's duration: prefer the previous
+				// node's per-step rate (a typical step time, excludes setup);
+				// fall back to the gap to the previous event capped at 60s
+				// (the gap includes setup time, so it overestimates).
+				// Corrects on the second step.
+				var stepEst time.Duration
+				if prevNodeRate > 0 {
+					stepEst = prevNodeRate
+				} else if !nodeRefStart.IsZero() {
+					stepEst = min(nodeStart.Sub(nodeRefStart), 60 * time.Second)
+				}
+				if stepEst <= 0 {
+					return 0, false
+				}
+				remaining = time.Duration(float64(stepEst) * float64(lastMax-lastStep))
+			} else {
+				elapsed = lastProgTs.Sub(nodeStart)
+				if elapsed <= 0 {
+					return 0, false
+				}
+				remaining = time.Duration(float64(elapsed) / float64(units) * float64(lastMax-lastStep))
+			}
+		} else {
+			if lastProg <= 0 || lastProg >= 1 {
+				return 0, false
+			}
+			start := jobStart
+			if !adjustedNodeStart.IsZero() {
+				start = adjustedNodeStart
+			}
+			elapsed = lastProgTs.Sub(start)
+			if elapsed <= 0 {
+				return 0, false
+			}
+			remaining = time.Duration(float64(elapsed) * (1 - lastProg) / lastProg)
 		}
-		elapsed := lastProgTs.Sub(start)
-		if elapsed <= 0 {
-			return 0, false
-		}
-		remaining := time.Duration(float64(elapsed) * (1 - lastProg) / lastProg)
 		age := now.Sub(lastProgTs)
 		if age < 0 {
 			age = 0
@@ -165,7 +215,16 @@ func (p *progress) updater() {
 			}
 			if lastNode != nodeKey {
 				if nodeKey != "" {
+					// Capture the previous node's last progress time (gap
+					// reference) and per-step rate (first-step prior).
+					nodeRefStart = lastProgTs
+					if pu := lastStep - nodeStartValue; pu > 0 && !nodeStart.IsZero() && !lastProgTs.IsZero() {
+						prevNodeRate = lastProgTs.Sub(nodeStart) / time.Duration(pu)
+					} else {
+						prevNodeRate = 0
+					}
 					nodeStart = time.Now()
+					nodeStartValue = sdp.State.SamplingStep // first progress of the node (usually step 1)
 					adjustedNodeStart = time.Time{}
 					lastStep = 0
 					lastStepTs = time.Time{}
@@ -175,6 +234,8 @@ func (p *progress) updater() {
 				}
 				lastNode = nodeKey
 			}
+			lastCUI = sdp.State.Node != ""
+			lastMax = sdp.State.SamplingSteps
 			lastJobCount = sdp.State.JobCount
 			lastQueue = sdp.QueueSize
 			if sdp.Progress != lastProg {
