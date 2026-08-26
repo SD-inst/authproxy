@@ -64,17 +64,17 @@ func isLLMPath(path string) bool {
 		strings.HasPrefix(path, "/upstream/")) && !strings.HasSuffix(path, ".js")
 }
 
-// isLookupPath matches the authproxy route POST /upstream/:model/v1/streams/lookup
-func isLookupPath(method, path string) bool {
-	return method == http.MethodPost &&
-		strings.HasPrefix(path, "/upstream/") &&
+// isLookupPath matches the authproxy route /upstream/:model/v1/streams/lookup.
+// Any method: the web UI polls it, and the original GET-only stub leaked POST traffic.
+func isLookupPath(path string) bool {
+	return strings.HasPrefix(path, "/upstream/") &&
 		strings.HasSuffix(path, "/v1/streams/lookup")
 }
 
-// isToolsPath matches the authproxy route GET /upstream/:model/tools
-func isToolsPath(method, path string) bool {
-	return method == http.MethodGet &&
-		strings.HasPrefix(path, "/upstream/") &&
+// isToolsPath matches the authproxy route /upstream/:model/tools.
+// Any method: the web UI polls it with POST, which a GET-only stub let through.
+func isToolsPath(path string) bool {
+	return strings.HasPrefix(path, "/upstream/") &&
 		strings.HasSuffix(path, "/tools")
 }
 
@@ -258,13 +258,13 @@ func newHandler(ps *proxyState, rp *httputil.ReverseProxy) *http.ServeMux {
 
 	serveMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// stubbed locally, mirrors authproxy routes (never proxied to upstream)
-		if isLookupPath(r.Method, r.URL.Path) {
+		if isLookupPath(r.URL.Path) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
-		if isToolsPath(r.Method, r.URL.Path) {
+		if isToolsPath(r.URL.Path) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"error":{"message":"this feature is disabled","type":"feature_disabled"}}`))

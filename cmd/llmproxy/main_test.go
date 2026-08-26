@@ -319,27 +319,34 @@ func TestStubbedLookupAndTools(t *testing.T) {
 		t.Errorf("lookup was not local/immediate: %v", elapsed)
 	}
 
-	// tools stub: immediate 403 feature_disabled.
-	req, err = http.NewRequest("GET", proxy.URL+"/upstream/mistral/tools", nil)
-	if err != nil {
-		t.Fatalf("building tools request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer keyB")
-	start = time.Now()
-	resp, err = http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("tools request failed: %v", err)
-	}
-	body, _ = io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("tools status = %d, want 403", resp.StatusCode)
-	}
-	if !strings.Contains(string(body), "feature_disabled") {
-		t.Errorf("tools body = %q, want feature_disabled error", string(body))
-	}
-	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
-		t.Errorf("tools was not local/immediate: %v", elapsed)
+	// tools stub: immediate 403 feature_disabled, for GET and POST alike
+	// (the web UI polls it with POST, which a GET-only stub let through).
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		var reader io.Reader
+		if method == http.MethodPost {
+			reader = strings.NewReader("{}")
+		}
+		req, err := http.NewRequest(method, proxy.URL+"/upstream/mistral/tools", reader)
+		if err != nil {
+			t.Fatalf("building tools request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer keyB")
+		start := time.Now()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("tools request failed: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("tools (%s) status = %d, want 403", method, resp.StatusCode)
+		}
+		if !strings.Contains(string(body), "feature_disabled") {
+			t.Errorf("tools (%s) body = %q, want feature_disabled error", method, string(body))
+		}
+		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+			t.Errorf("tools (%s) was not local/immediate: %v", method, elapsed)
+		}
 	}
 
 	wg.Wait()
