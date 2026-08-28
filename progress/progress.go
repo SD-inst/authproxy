@@ -56,6 +56,12 @@ type sdprogress struct {
 	State       sdprogressState
 }
 
+// CUIReseter lets callers (the /cui/join handler) reset the CUI progress
+// state at task start without depending on the unexported progress type.
+type CUIReseter interface {
+	ResetCUI()
+}
+
 type progress struct {
 	b           *events.Broker
 	sdhost      string
@@ -66,10 +72,22 @@ type progress struct {
 	pchan       chan sdprogress
 	statusToken string
 	sq          *servicequeue.ServiceQueue
+	resetCUI    chan struct{}
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string, sq *servicequeue.ServiceQueue) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq}
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq, resetCUI: make(chan struct{}, 1)}
+}
+
+// ResetCUI resets the CUI progress state and all ETA timers at task start
+// (ComfyUI does not send a zero-progress on task start, so the previous
+// task's 100% would otherwise linger until the next sampler's first step).
+// Non-blocking: if the updater is already resetting, the signal is dropped.
+func (p *progress) ResetCUI() {
+	select {
+	case p.resetCUI <- struct{}{}:
+	default:
+	}
 }
 
 func (p *progress) updater() {
@@ -132,7 +150,7 @@ func (p *progress) updater() {
 				if prevNodeRate > 0 {
 					stepEst = prevNodeRate
 				} else if !nodeRefStart.IsZero() {
-					stepEst = min(nodeStart.Sub(nodeRefStart), 60 * time.Second)
+					stepEst = min(nodeStart.Sub(nodeRefStart), 60*time.Second)
 				}
 				if stepEst <= 0 {
 					return 0, false
@@ -191,6 +209,26 @@ func (p *progress) updater() {
 
 	for {
 		select {
+		case <-p.resetCUI:
+			// Task start: ComfyUI does not send zero-progress here, so clear
+			// the previous task's state and all ETA baselines (the progress
+			// would otherwise linger at 100% until the next sampler step).
+			lastProg = 0
+			lastProgTs = time.Time{}
+			jobStart = time.Now()
+			lastID = ""
+			nodeStart = time.Time{}
+			adjustedNodeStart = time.Time{}
+			lastNode = ""
+			lastCUI = false
+			nodeRefStart = time.Time{}
+			prevNodeRate = 0
+			nodeStartValue = 0
+			lastMax = 0
+			lastStep = 0
+			lastStepTs = time.Time{}
+			stepObs = 0
+			broadcast("")
 		case sdp := <-p.pchan:
 			if sdp.State.Job == nil {
 				continue

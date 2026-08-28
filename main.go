@@ -212,7 +212,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error parsing CUI URL: %s", err)
 		}
-		addCUIHandlers(e, sq, cuiurl)
+		addCUIHandlers(e, sq, cuiurl, pr)
 		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	if config.StaticPath != "" {
