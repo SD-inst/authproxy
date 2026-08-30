@@ -55,6 +55,17 @@ func CopyLink(src string, dst string) error {
 }
 
 func (d *Downloader) UpdateFile(filename string) error {
+	return d.updateFile(filename, "")
+}
+
+// UpdateFileFromSource is like UpdateFile, but when the model is not found on
+// CivitAI it records the given page URL (a Hugging Face file page, for remote
+// uploads) in the "model page" field instead of an empty object.
+func (d *Downloader) UpdateFileFromSource(filename, sourcePage string) error {
+	return d.updateFile(filename, sourcePage)
+}
+
+func (d *Downloader) updateFile(filename string, sourcePage string) error {
 	oldumask := maybeUmask(0111)
 	defer maybeUmask(oldumask)
 	ext := filepath.Ext(filename)
@@ -89,15 +100,30 @@ func (d *Downloader) UpdateFile(filename string) error {
 	if err != nil {
 		return err
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode == 404 {
+		if sourcePage != "" {
+			var hfMetadata struct {
+				ModelPage string `json:"model page"`
+			}
+			hfMetadata.ModelPage = sourcePage
+			enc := json.NewEncoder(jsonfile)
+			enc.SetIndent("", "    ")
+			if err := enc.Encode(hfMetadata); err != nil {
+				return err
+			}
+			return nil
+		}
 		jsonfile.WriteString("{}")
 		return fmt.Errorf("model %s not found on CivitAI", filepath.Base(filename))
 	}
 	var civitaiMetadata struct {
-		Description  string
-		TrainedWords []string
-		BaseModel    string // "SD 1.5", "SDXL 1.0"
-		Images       []struct {
+		ID            int `json:"id"`
+		ModelID       int `json:"modelId"`
+		Description   string
+		TrainedWords  []string
+		BaseModel     string // "SD 1.5", "SDXL 1.0"
+		Images        []struct {
 			URL  string
 			Type string
 		}
@@ -107,6 +133,7 @@ func (d *Downloader) UpdateFile(filename string) error {
 		Description    string `json:"description"`
 		SDVersion      string `json:"sd version"`
 		ActivationText string `json:"activation text"`
+		ModelPage      string `json:"model page"`
 	}
 	json.NewDecoder(resp.Body).Decode(&civitaiMetadata)
 	metadata.Description = civitaiMetadata.Description
@@ -120,6 +147,7 @@ func (d *Downloader) UpdateFile(filename string) error {
 		metadata.SDVersion = "unknown"
 	}
 	metadata.ActivationText = strings.Join(civitaiMetadata.TrainedWords, "; ")
+	metadata.ModelPage = fmt.Sprintf("https://civitai.com/models/%d?modelVersionId=%d", civitaiMetadata.ModelID, civitaiMetadata.ID)
 
 	enc := json.NewEncoder(jsonfile)
 	enc.SetIndent("", "    ")
@@ -154,7 +182,9 @@ func (d *Downloader) UpdateFile(filename string) error {
 	return nil
 }
 
-func (d *Downloader) Walk(root string, result func(path string, err error)) error {
+// Walk walks root and applies perFile to every .safetensors file, reporting
+// each (path, err) to the optional result callback.
+func (d *Downloader) Walk(root string, perFile func(path string) error, result func(path string, err error)) error {
 	return filepath.WalkDir(root, func(path string, dir fs.DirEntry, err error) error {
 		if err != nil {
 			log.Printf("Error accessing %s: %s", path, err)
@@ -164,11 +194,77 @@ func (d *Downloader) Walk(root string, result func(path string, err error)) erro
 			return nil
 		}
 		if filepath.Ext(path) == ".safetensors" {
-			err := d.UpdateFile(path)
+			err := perFile(path)
 			if result != nil {
 				result(path, err)
 			}
 		}
 		return nil
 	})
+}
+
+// UpdateModelPage fills the "model page" field of an existing model's JSON by
+// looking the file up on CivitAI by hash. It leaves the file alone when there
+// is no JSON, the field is already set, or the model is not on CivitAI.
+func (d *Downloader) UpdateModelPage(filename string) error {
+	ext := filepath.Ext(filename)
+	if ext != ".safetensors" {
+		return fmt.Errorf("invalid extension")
+	}
+	filebase := filename[:len(filename)-len(ext)]
+	jsonfilename := filebase + ".json"
+	if !exists(jsonfilename) {
+		return nil
+	}
+	jsonfile, err := os.Open(jsonfilename)
+	if err != nil {
+		return err
+	}
+	defer jsonfile.Close()
+	var metadata struct {
+		Description    string `json:"description"`
+		SDVersion      string `json:"sd version"`
+		ActivationText string `json:"activation text"`
+		ModelPage      string `json:"model page"`
+	}
+	if err := json.NewDecoder(jsonfile).Decode(&metadata); err != nil {
+		return err
+	}
+	if metadata.ModelPage != "" {
+		return nil
+	}
+	modelfile, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer modelfile.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, modelfile); err != nil {
+		return err
+	}
+	sum := h.Sum(nil)
+	resp, err := d.c.Get(fmt.Sprintf("https://civitai.com/api/v1/model-versions/by-hash/%x", sum))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 404 {
+		return nil
+	}
+	var civitaiMetadata struct {
+		ID      int `json:"id"`
+		ModelID int `json:"modelId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&civitaiMetadata); err != nil {
+		return err
+	}
+	metadata.ModelPage = fmt.Sprintf("https://civitai.com/models/%d?modelVersionId=%d", civitaiMetadata.ModelID, civitaiMetadata.ID)
+	out, err := os.Create(jsonfilename)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "    ")
+	return enc.Encode(metadata)
 }

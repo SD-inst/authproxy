@@ -36,6 +36,7 @@ const maxCivitaiDownloadSize = 2 * 1024 * 1024 * 1024 // 2 GB
 type dlTask struct {
 	link string
 	dir  string
+	page string // original file page URL (Hugging Face remote uploads); empty otherwise
 }
 
 type uploader struct {
@@ -262,7 +263,12 @@ func (u *uploader) download(c echo.Context) error {
 			u.dlError("Hugging Face error: %s", err)
 			return nil
 		}
-		u.dlc <- dlTask{link: downloadURL, dir: params.Dir}
+		pageURL, err := u.hfdl.FilePageURL(params.URL)
+		if err != nil {
+			u.dlError("Hugging Face error: %s", err)
+			return nil
+		}
+		u.dlc <- dlTask{link: downloadURL, dir: params.Dir, page: pageURL}
 		return nil
 	}
 	if cu.Host != "civitai.com" && cu.Host != "civitai.red" {
@@ -416,7 +422,7 @@ func (u *uploader) startDownloader() {
 						u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_COUNT, Value: 1}
 						u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_SIZE, Value: float64(dl)}
 						go func() {
-							err := u.civitdl.UpdateFile(f.Name())
+							err := u.civitdl.UpdateFileFromSource(f.Name(), task.page)
 							if err != nil {
 								log.Printf("Error getting metadata from CivitAI: %s", err)
 							}

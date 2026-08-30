@@ -41,6 +41,23 @@ func (u *hfURL) resolveURL() string {
 	return fmt.Sprintf("https://huggingface.co/%s/%s/resolve/%s/%s?download=true", u.user, u.repo, u.branch, url.PathEscape(file))
 }
 
+// FilePageURL returns the Hugging Face file page (blob) URL for the given
+// file URL, normalizing both /blob/ and /resolve/ forms to the /blob/ page.
+func (d *Downloader) FilePageURL(rawURL string) (string, error) {
+	u, err := parseHFURL(rawURL)
+	if err != nil {
+		return "", err
+	}
+	file := u.file
+	if idx := strings.Index(file, "?"); idx != -1 {
+		file = file[:idx]
+	}
+	if idx := strings.Index(file, "#"); idx != -1 {
+		file = file[:idx]
+	}
+	return fmt.Sprintf("https://huggingface.co/%s/%s/blob/%s/%s", u.user, u.repo, u.branch, url.PathEscape(file)), nil
+}
+
 type Downloader struct {
 	client *http.Client
 }
