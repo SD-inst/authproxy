@@ -31,6 +31,8 @@ var params struct {
 	Username       string `short:"u" description:"Username for -a"`
 	Password       string `short:"p" description:"Password for -a"`
 	JWTSecret      string
+	Watchdog       string `long:"watchdog" description:"Watchdog control address (ip:port); enables container auto start/stop"`
+	StopTimeoutMin int    `long:"stop-timeout" default:"60" description:"Minutes of inactivity before a container is auto-stopped"`
 }
 
 var domains = map[string]echo.MiddlewareFunc{
@@ -148,7 +150,8 @@ func main() {
 	e.GET("/logout", logoutHandler)
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
-	wd := watchdog.NewWatchdog(config.FIFOPath)
+	wd := watchdog.NewWatchdog(params.Watchdog)
+	m := newContainerManager(wd, time.Duration(params.StopTimeoutMin)*time.Minute)
 	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)
 	e.POST("/internal/free_complete", func(c echo.Context) error {
@@ -169,10 +172,10 @@ func main() {
 					continue
 				}
 				if c.Request().Host == d+config.Domain {
-					return t(next)(c)
+					return m.withDomain(t, d)(next)(c)
 				}
 			}
-			return domains[""](next)(c)
+			return m.withDomain(domains[""], "")(next)(c)
 		}
 	})
 	for d, t := range domains {
@@ -183,7 +186,7 @@ func main() {
 			e.Group(d, earlyCheckMiddleware(d), trail, t)
 		}
 	}
-	e.Group("/sdapi", domains[config.Domain])
+	e.Group("/sdapi", m.ensureService("stablediff-cuda"), domains[config.Domain])
 	addSDQueueHandlers(e, sq)
 	addASQueueHandlers(e, sq)
 	addOviQueueHandlers(e, sq)
@@ -191,8 +194,8 @@ func main() {
 		llm := NewLLMBalancer(llmurl, sq, mchan)
 		e.POST("/upstream/:model/v1/streams/lookup", llm.lookup)
 		e.GET("/upstream/:model/tools", llm.tools)
-		e.Group("/v1/*", llm.proxy)
-		e.Group("/upstream/*", llm.proxy)
+		e.Group("/v1/*", m.ensureService("llama-swap"), llm.proxy)
+		e.Group("/upstream/*", m.ensureService("llama-swap"), llm.proxy)
 		e.POST("/v1/internal/encode", nil, llm.proxy)
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models/*", llm.forbidden)
@@ -213,7 +216,7 @@ func main() {
 			log.Fatalf("Error parsing CUI URL: %s", err)
 		}
 		addCUIHandlers(e, sq, cuiurl, pr)
-		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
+		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), m.ensureService("comfyui"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	if config.StaticPath != "" {
 		dirs, err := os.ReadDir(config.StaticPath)

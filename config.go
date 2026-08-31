@@ -16,7 +16,6 @@ type Config struct {
 	LoginHeader  string `yaml:"login_header" description:"Title text for login page"`
 	LoginTitle   string `yaml:"login_title" description:"Login page invitation text"`
 	SDTimeout    int    `yaml:"sd_timeout" description:"SD task timeout in seconds"`
-	FIFOPath     string `yaml:"fifo_path" description:"Path to FIFO controlling instance restarts"`
 	CookieFile   string `yaml:"cookie_file" description:"Path to the cookie storage file"`
 	PushPassword string `yaml:"push_password" description:"Password to push prometheus metrics from other services"`
 	StaticPath   string `yaml:"static_path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
@@ -29,7 +28,6 @@ var config = Config{
 	LoginHeader: "Stable Diffusion for friends",
 	LoginTitle:  "Please log in",
 	SDTimeout:   300,
-	FIFOPath:    "/var/run/sdwd/control.fifo",
 	CookieFile:  "cookie.txt",
 }
 
