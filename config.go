@@ -21,6 +21,12 @@ type Config struct {
 	StaticPath   string `yaml:"static_path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
 	ACL          ACL    `yaml:"acl,flow" description:"Mapping of user names to a list or roles or * for full access"`
 	StatusToken  string `yaml:"status_token" description:"Token for /q/status.json endpoint auth"`
+	// ProxyAuthSecret is the shared secret Caddy sets in the proxyAuthHeader
+	// on routes already gated by Caddy-side basic auth or a secret URL. A
+	// request carrying it on a service path bypasses the JWT check. The value
+	// is server-only (never sent to or visible to a browser), so a client
+	// cannot forge a valid bypass header.
+	ProxyAuthSecret string `yaml:"proxy_auth_secret" description:"Shared secret Caddy sends to bypass JWT on gated service routes"`
 }
 
 var config = Config{

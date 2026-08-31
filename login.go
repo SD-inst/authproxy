@@ -177,7 +177,10 @@ func earlyCheckMiddleware(path string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			if c.Request().URL != nil && c.Request().URL.Path == path {
-				token := c.Get("user").(*jwt.Token)
+				// A JWT-skipped request (e.g. a Caddy proxy-auth bypass) has no
+				// "user" in context; Get returns an untyped nil, which a direct
+				// type assertion would panic on. Guard with the comma-ok form.
+				token, _ := c.Get("user").(*jwt.Token)
 				if token != nil {
 					date, err := token.Claims.GetExpirationTime()
 					if err != nil {

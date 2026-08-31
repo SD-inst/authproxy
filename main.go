@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"log"
 	"math/rand"
 	"net/http"
@@ -53,6 +54,25 @@ var skipAuth = map[string][]string{
 	"prefix": {
 		"/v1/", "/sdapi/",
 	},
+}
+
+// proxyAuthHeader is the header Caddy sets (via header_up) on routes already
+// gated by Caddy-side basic auth or a secret URL. The value is a server-only
+// shared secret, so a client cannot forge a valid bypass header.
+const proxyAuthHeader = "X-Proxy-Auth"
+
+// isProxyAuth reports whether the request carries the Caddy-side shared
+// proxy-auth header with the configured secret value. When the secret is
+// unset, it is always false (feature disabled).
+func isProxyAuth(c echo.Context) bool {
+	if config.ProxyAuthSecret == "" {
+		return false
+	}
+	h := c.Request().Header.Get(proxyAuthHeader)
+	if h == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(h), []byte(config.ProxyAuthSecret)) == 1
 }
 
 func post(path string) {
@@ -115,6 +135,13 @@ func main() {
 				if strings.HasPrefix(path, p) {
 					return true
 				}
+			}
+			// Caddy-only service routes (already gated by basic auth or a
+			// secret URL) carry the shared proxy-auth header; let them through
+			// without a JWT. Scoped to the service prefix so the blast radius
+			// is limited to that service even if the header were ever forged.
+			if isProxyAuth(c) && strings.HasPrefix(path, "/cui/") {
+				return true
 			}
 			return false
 		},
