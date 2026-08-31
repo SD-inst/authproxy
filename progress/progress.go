@@ -73,10 +73,11 @@ type progress struct {
 	statusToken string
 	sq          *servicequeue.ServiceQueue
 	resetCUI    chan struct{}
+	resetProgress chan struct{}
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string, sq *servicequeue.ServiceQueue) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq, resetCUI: make(chan struct{}, 1)}
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq, resetCUI: make(chan struct{}, 1), resetProgress: make(chan struct{}, 1)}
 }
 
 // ResetCUI resets the CUI progress state and all ETA timers at task start
@@ -229,6 +230,12 @@ func (p *progress) updater() {
 			lastStepTs = time.Time{}
 			stepObs = 0
 			broadcast("")
+		case <-p.resetProgress:
+			// The service dropped to NONE: no active job, so zero the progress
+			// percent only. Keep every other field (description, duration,
+			// last_active) so it stays visible which task was running.
+			lastProg = 0
+			broadcast("")
 		case sdp := <-p.pchan:
 			if sdp.State.Job == nil {
 				continue
@@ -367,6 +374,14 @@ func (p *progress) serviceUpdater() {
 	var lastPrevService servicequeue.SvcType
 	var lastPrevWaitService servicequeue.SvcType
 	for svc := range p.svcChan {
+		if svc.Type == servicequeue.NONE {
+			// Service is NONE: no active job, so reset the progress to 0.
+			// Non-blocking: if the updater is already resetting, drop it.
+			select {
+			case p.resetProgress <- struct{}{}:
+			default:
+			}
+		}
 		resp := p.b.State(events.SERVICE_UPDATE)
 		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue}
 		if svc.Description != "" {

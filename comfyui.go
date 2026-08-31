@@ -78,6 +78,34 @@ func (m *containerManager) cuiWSHandler(real echo.HandlerFunc) echo.HandlerFunc 
 	}
 }
 
+// cuiJobsStub is the empty /api/jobs response served while the container is
+// stopped, so the web UI's post-reconnect poll sees no work and does not proxy
+// (and thereby start) the container.
+var cuiJobsStub = map[string]any{
+	"jobs": []any{},
+	"pagination": map[string]any{
+		"offset":   0,
+		"limit":    0,
+		"total":    0,
+		"has_more": false,
+	},
+}
+
+// cuiJobsHandler handles the ComfyUI /api/jobs poll fired right after a
+// websocket reconnect. If the container is running (or auto start/stop is
+// disabled) it proxies to the real backend via the given handler; if the
+// container is stopped it returns the empty jobs stub instead — no proxy and no
+// container start. This keeps the silent-websocket trick effective: without it
+// the page's post-reconnect API burst would restart the container.
+func (m *containerManager) cuiJobsHandler(real echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if m == nil || !m.enabled() || m.isRunning("comfyui") {
+			return real(c)
+		}
+		return c.JSON(http.StatusOK, cuiJobsStub)
+	}
+}
+
 // silentWS upgrades to a websocket that accepts the connection but sends nothing.
 // It stays open (holding the client) while the container is stopped and closes as
 // soon as the container starts, so the client reconnects to the real proxy. The

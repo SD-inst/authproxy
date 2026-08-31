@@ -202,19 +202,20 @@ func main() {
 	// (the container's /ws, with or without the /cui path rewrite) here so they
 	// are in scope for both the path route and the cui. domain route below.
 	var cuiurl *url.URL
-	var cuiWSPath, cuiWSDomain echo.HandlerFunc
+	var cuiWSPath, cuiWSDomain, cuiJobsPath echo.HandlerFunc
 	if CUI_URL != "" {
 		cuiurl, err = url.Parse(CUI_URL)
 		if err != nil {
 			log.Fatalf("Error parsing CUI URL: %s", err)
 		}
 		cuiWSDomain = composeMW(newCUIProxy(cuiurl))
-		// The rewrite key is matched against RequestURI (path + query), and
-		// rewriteRulesRegex anchors it to the end of the string, so an exact
-		// "/cui/ws" never matches "/cui/ws?clientId=…" — the query would drop
-		// the rule and comfyui would get the raw path and 404. The wildcard
-		// captures the query into $1 so the backend sees /ws?clientId=…
+		// The rewrite keys are matched against RequestURI (path + query), and
+		// rewriteRulesRegex anchors them to the end of the string, so an exact
+		// path never matches once a query is present — the rule would drop and
+		// comfyui would get the raw path and 404. The wildcards capture the
+		// query into $1 so the backend sees the real path with its args.
 		cuiWSPath = composeMW(middleware.Rewrite(map[string]string{"/cui/ws*": "/ws$1"}), newCUIProxy(cuiurl))
+		cuiJobsPath = composeMW(middleware.Rewrite(map[string]string{"/cui/api/jobs*": "/api/jobs$1"}), newCUIProxy(cuiurl))
 	}
 	e.Group("/*", earlyCheckMiddleware("/"), func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -271,6 +272,10 @@ func main() {
 		// keeps the container alive; it is served silently while the container is
 		// stopped and proxied for real once it is up.
 		e.Any("/cui/ws", m.cuiWSHandler(cuiWSPath), earlyCheckMiddleware("/cui/ws"))
+		// /cui/api/jobs is the page's post-reconnect poll; like /cui/ws it is a
+		// static route so it never reaches ensureService. Stopped → empty stub,
+		// running → real proxy.
+		e.Any("/cui/api/jobs", m.cuiJobsHandler(cuiJobsPath), earlyCheckMiddleware("/cui/api/jobs"))
 		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), m.ensureService("comfyui"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	if config.StaticPath != "" {
