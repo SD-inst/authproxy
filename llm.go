@@ -153,8 +153,8 @@ func (l *llmbalancer) startMetricCollection() {
 	var err error
 	for stream == nil {
 		stream, err = eventsource.Subscribe(l.target.JoinPath("/api/events").String(), "")
-		if err != nil {
-			log.Printf("Error joining llama-swap event stream: %s; retrying...", err)
+		if err == nil {
+			break
 		}
 		time.Sleep(time.Second * 5)
 	}
