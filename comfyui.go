@@ -71,6 +71,12 @@ func composeMW(mws ...echo.MiddlewareFunc) echo.HandlerFunc {
 // restarting the container.
 func (m *containerManager) cuiWSHandler(real echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
+		// During an active downtime a stopped container is not served by the
+		// silent (fake) websocket either: answer with a 502 so Caddy can show
+		// the maintenance/timer page. Mirrors the ensureService guard.
+		if m != nil && m.downtime && !m.isRunning("comfyui") {
+			return echo.NewHTTPError(http.StatusBadGateway, "service temporarily unavailable")
+		}
 		if m == nil || !m.enabled() || m.isRunning("comfyui") {
 			return real(c)
 		}

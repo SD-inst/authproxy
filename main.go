@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/subtle"
+	"encoding/json"
 	"log"
 	"math/rand"
 	"net/http"
@@ -34,6 +36,7 @@ var params struct {
 	JWTSecret      string
 	Watchdog       string `long:"watchdog" description:"Watchdog control address (ip:port); enables container auto start/stop"`
 	StopTimeoutMin int    `long:"stop-timeout" default:"60" description:"Minutes of inactivity before a container is auto-stopped"`
+	DowntimeFile   string `long:"downtime-file" description:"Path to the downtime status file; a JSON object with a \"started\" field enables downtime mode (no container starts, services return 502)"`
 }
 
 var domains = map[string]echo.MiddlewareFunc{
@@ -81,6 +84,35 @@ func post(path string) {
 		log.Printf("*** Error calling %s: %s", path, err)
 		return
 	}
+}
+
+// loadDowntime reports whether the downtime status file at path marks an active
+// downtime. Normal operation (false) is the default in every case: the file is
+// unset, missing, empty, not a JSON object, or an object without a "started"
+// field. Only a JSON object carrying a "started" field switches to downtime.
+func loadDowntime(path string) bool {
+	if path == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("Cannot read downtime file %s: %s; running normally", path, err)
+		}
+		return false
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return false
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		log.Printf("Downtime file %s is not a JSON object (%s); running normally", path, err)
+		return false
+	}
+	if _, ok := obj["started"]; !ok {
+		return false
+	}
+	return true
 }
 
 func main() {
@@ -179,6 +211,10 @@ func main() {
 	broker := events.NewBroker()
 	wd := watchdog.NewWatchdog(params.Watchdog)
 	m := newContainerManager(wd, time.Duration(params.StopTimeoutMin)*time.Minute)
+	m.downtime = loadDowntime(params.DowntimeFile)
+	if m.downtime {
+		log.Printf("Downtime mode active (from %s): containers will not be started; service requests return 502", params.DowntimeFile)
+	}
 	if m.enabled() {
 		log.Printf("Watchdog enabled at %s; auto start/stop after %s idle", params.Watchdog, m.stopAfter)
 	} else {

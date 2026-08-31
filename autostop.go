@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"sync"
 	"time"
 
@@ -53,6 +54,10 @@ type containerManager struct {
 	wd        *watchdog.Watchdog
 	stopAfter time.Duration
 	states    map[string]*svcState
+	// downtime marks an active maintenance window: stopped containers are never
+	// woken up on demand, and their requests get a 502 (which Caddy turns into
+	// the maintenance/timer page) instead of a start.
+	downtime bool
 }
 
 // newContainerManager builds a manager for the given watchdog and inactivity
@@ -87,10 +92,15 @@ func (m *containerManager) isRunning(svc string) bool {
 // ensureService returns middleware that makes sure the container backing svc is
 // running (starting it synchronously if needed, suspending the request until it
 // is ready) and refreshes its inactivity timer both when the request starts and
-// when it completes.
+// when it completes. During an active downtime a not-yet-running container is
+// not started; the request is answered with a 502 instead, so Caddy can serve
+// the maintenance/timer page.
 func (m *containerManager) ensureService(svc string) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			if m.downtime && !m.isRunning(svc) {
+				return echo.NewHTTPError(http.StatusBadGateway, "service temporarily unavailable")
+			}
 			m.ensureRunning(svc)
 			defer m.touch(svc) // keep the timer alive once the request is done
 			m.touch(svc)
@@ -115,7 +125,7 @@ func (m *containerManager) withDomain(tw echo.MiddlewareFunc, d string) echo.Mid
 // performs it (holding the service lock) while the rest block on the lock and
 // proceed once it has finished.
 func (m *containerManager) ensureRunning(svc string) {
-	if !m.enabled() {
+	if !m.enabled() || m.downtime {
 		return
 	}
 	st := m.states[svc]
@@ -124,7 +134,7 @@ func (m *containerManager) ensureRunning(svc string) {
 	if st.running {
 		return
 	}
-	if m.startLocked(svc, st) {
+	if m.startLocked(svc) {
 		st.running = true
 		st.last = time.Now()
 		log.Printf("Service %s started", svc)
@@ -133,8 +143,8 @@ func (m *containerManager) ensureRunning(svc string) {
 
 // startLocked runs up to startAttempts start commands for svc, each bounded by
 // startAttemptTimeout. It reports whether the container ended up running. Must
-// be called with st.mu held.
-func (m *containerManager) startLocked(svc string, st *svcState) bool {
+// be called with the service lock (svcState.mu) held.
+func (m *containerManager) startLocked(svc string) bool {
 	for attempt := 1; attempt <= startAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), startAttemptTimeout)
 		resp, err := m.wd.Exec(ctx, "start "+svc)
