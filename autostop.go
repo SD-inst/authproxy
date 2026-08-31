@@ -73,6 +73,17 @@ func (m *containerManager) enabled() bool {
 	return m != nil && m.wd.Enabled()
 }
 
+// isRunning reports whether the manager believes svc is currently running. It is
+// the manager's own view of the lifecycle (it assumes nothing is running at
+// startup and only marks a service running once it has successfully started it),
+// which is the same view the auto start/stop relies on.
+func (m *containerManager) isRunning(svc string) bool {
+	st := m.states[svc]
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.running
+}
+
 // ensureService returns middleware that makes sure the container backing svc is
 // running (starting it synchronously if needed, suspending the request until it
 // is ready) and refreshes its inactivity timer both when the request starts and

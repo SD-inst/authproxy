@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/proxy"
@@ -42,4 +43,79 @@ func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL
 		sq.Unlock()
 		return nil
 	})
+}
+
+// silentWSPollInterval is how often a silent (container-stopped) ComfyUI
+// websocket checks whether the container has started, so it can close itself and
+// let the client reconnect to the real proxy.
+const silentWSPollInterval = 2 * time.Second
+
+// composeMW composes the given middlewares (first = outermost) over a no-op
+// terminal into a single handler. The ComfyUI proxy middleware short-circuits
+// (it proxies and writes the response itself), so the terminal is never reached
+// on a successful proxy.
+func composeMW(mws ...echo.MiddlewareFunc) echo.HandlerFunc {
+	var h echo.HandlerFunc = func(c echo.Context) error { return nil }
+	for i := len(mws) - 1; i >= 0; i-- {
+		h = mws[i](h)
+	}
+	return h
+}
+
+// cuiWSHandler handles the ComfyUI websocket. If the container is running (or
+// auto start/stop is disabled) it proxies the connection to the real backend via
+// the given handler; if the container is stopped it accepts a silent websocket
+// instead — no data is sent and the container is not started. The silent socket
+// closes itself once the container starts, so the client reconnects and lands on
+// the real proxy. This is what stops an idle tab's websocket reconnect from
+// restarting the container.
+func (m *containerManager) cuiWSHandler(real echo.HandlerFunc) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		if m == nil || !m.enabled() || m.isRunning("comfyui") {
+			return real(c)
+		}
+		return m.silentWS("comfyui", c)
+	}
+}
+
+// silentWS upgrades to a websocket that accepts the connection but sends nothing.
+// It stays open (holding the client) while the container is stopped and closes as
+// soon as the container starts, so the client reconnects to the real proxy. The
+// ComfyUI socket is server→client only, so incoming messages are ignored; the
+// read loop exists solely to detect when the client goes away.
+func (m *containerManager) silentWS(svc string, c echo.Context) error {
+	upg := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	conn, err := upg.Upgrade(c.Response(), c.Request(), nil)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	quit := make(chan struct{})
+	go func() {
+		// The ComfyUI socket is server→client only, so message contents are
+		// ignored; this loop exists solely to detect when the client goes away
+		// (ReadMessage errors) so we can stop holding the handler. close(quit)
+		// runs exactly once, when this goroutine exits.
+		defer close(quit)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+	ticker := time.NewTicker(silentWSPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-quit:
+			return nil // client went away
+		case <-ticker.C:
+			if m.isRunning(svc) {
+				// Container is up: send a close frame so the client reconnects to
+				// the real proxy.
+				_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "backend online"))
+				return nil
+			}
+		}
+	}
 }

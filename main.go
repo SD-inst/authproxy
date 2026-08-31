@@ -197,8 +197,30 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// The ComfyUI websocket is routed separately so that a reconnect while the
+	// container is stopped does not start it. Precompute the real-proxy handlers
+	// (the container's /ws, with or without the /cui path rewrite) here so they
+	// are in scope for both the path route and the cui. domain route below.
+	var cuiurl *url.URL
+	var cuiWSPath, cuiWSDomain echo.HandlerFunc
+	if CUI_URL != "" {
+		cuiurl, err = url.Parse(CUI_URL)
+		if err != nil {
+			log.Fatalf("Error parsing CUI URL: %s", err)
+		}
+		cuiWSDomain = composeMW(newCUIProxy(cuiurl))
+		// The rewrite key is matched against RequestURI (path + query), and
+		// rewriteRulesRegex anchors it to the end of the string, so an exact
+		// "/cui/ws" never matches "/cui/ws?clientId=…" — the query would drop
+		// the rule and comfyui would get the raw path and 404. The wildcard
+		// captures the query into $1 so the backend sees /ws?clientId=…
+		cuiWSPath = composeMW(middleware.Rewrite(map[string]string{"/cui/ws*": "/ws$1"}), newCUIProxy(cuiurl))
+	}
 	e.Group("/*", earlyCheckMiddleware("/"), func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			if cuiurl != nil && c.Request().Host == "cui."+config.Domain && c.Request().URL.Path == "/ws" {
+				return m.cuiWSHandler(cuiWSDomain)(c)
+			}
 			for d, t := range domains {
 				if len(d) > 0 && d[0] == '/' { // skip path checks
 					continue
@@ -243,11 +265,12 @@ func main() {
 		e.Group("/tts/*", earlyCheckMiddleware("/tts/"), middleware.Rewrite(map[string]string{"/tts/*": "/$1"}), newTTSProxy(ttsurl, sq, wd))
 	}
 	if CUI_URL != "" {
-		cuiurl, err := url.Parse(CUI_URL)
-		if err != nil {
-			log.Fatalf("Error parsing CUI URL: %s", err)
-		}
 		addCUIHandlers(e, sq, cuiurl, pr)
+		// /cui/ws is matched before the /cui/* group (static beats wildcard), so
+		// the websocket never goes through ensureService and thus never starts or
+		// keeps the container alive; it is served silently while the container is
+		// stopped and proxied for real once it is up.
+		e.Any("/cui/ws", m.cuiWSHandler(cuiWSPath), earlyCheckMiddleware("/cui/ws"))
 		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), m.ensureService("comfyui"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	if config.StaticPath != "" {
