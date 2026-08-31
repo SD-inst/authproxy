@@ -152,6 +152,11 @@ func main() {
 	broker := events.NewBroker()
 	wd := watchdog.NewWatchdog(params.Watchdog)
 	m := newContainerManager(wd, time.Duration(params.StopTimeoutMin)*time.Minute)
+	if m.enabled() {
+		log.Printf("Watchdog enabled at %s; auto start/stop after %s idle", params.Watchdog, m.stopAfter)
+	} else {
+		log.Printf("Watchdog disabled (--watchdog not set): container auto start/stop and restart-on-demand are OFF")
+	}
 	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)
 	e.POST("/internal/free_complete", func(c echo.Context) error {

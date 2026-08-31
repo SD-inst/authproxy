@@ -212,8 +212,8 @@ func (l *llmbalancer) startMetricCollection() {
 				}
 			}
 			lastID = evt.ID
-		case err := <-stream.Errors:
-			log.Printf("Error: %s", err)
+		case <-stream.Errors:
+			continue
 		}
 	}
 }

@@ -408,7 +408,6 @@ func (p *progress) sdQuery(sq *servicequeue.ServiceQueue) {
 		sq.Unlock()
 		resp, err := client.Get(p.sdhost + "/sdapi/v1/progress")
 		if err != nil {
-			log.Printf("Error getting data: %v", err)
 			continue
 		}
 		var sdp sdprogress

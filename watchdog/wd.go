@@ -27,22 +27,31 @@ func (wd *Watchdog) Enabled() bool {
 	return wd != nil && wd.address != ""
 }
 
+// maxExecTimeout bounds a command that is sent with no caller-supplied deadline
+// (the fire-and-forget Send), so a stalled control endpoint cannot block a
+// goroutine and its connection forever.
+const maxExecTimeout = 2 * time.Minute
+
 // Exec sends a single command and returns the one-line response. A dedicated
 // connection is opened per command so that a long op (e.g. start, which blocks
-// until the container is healthy) does not delay unrelated commands.
+// until the container is healthy) does not delay unrelated commands. The whole
+// operation is always deadline-bounded: by the caller's context if it has one,
+// otherwise by maxExecTimeout.
 func (wd *Watchdog) Exec(ctx context.Context, command string) (string, error) {
 	if !wd.Enabled() {
 		return "", nil
+	}
+	deadline := time.Now().Add(maxExecTimeout)
+	if d, ok := ctx.Deadline(); ok {
+		deadline = d
 	}
 	conn, err := net.DialTimeout("tcp", wd.address, 10*time.Second)
 	if err != nil {
 		return "", err
 	}
 	defer conn.Close()
-	if deadline, ok := ctx.Deadline(); ok {
-		if err := conn.SetDeadline(deadline); err != nil {
-			return "", err
-		}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return "", err
 	}
 	if _, err := conn.Write([]byte(command + "\n")); err != nil {
 		return "", err

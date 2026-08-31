@@ -161,21 +161,30 @@ func (m *containerManager) armTimerLocked(svc string, st *svcState) {
 	}
 	st.timer = time.AfterFunc(m.stopAfter, func() {
 		st.mu.Lock()
-		defer st.mu.Unlock()
 		// Re-check: a recent access may have re-armed the timer, making this
 		// firing stale.
-		if st.running && time.Since(st.last) >= m.stopAfter {
-			st.running = false
-			st.timer = nil
-			log.Printf("Service %s idle for %s, stopping", svc, m.stopAfter)
-			ctx, cancel := context.WithTimeout(context.Background(), stopAttemptTimeout)
-			resp, err := m.wd.Exec(ctx, "stop "+svc)
-			cancel()
-			if err != nil {
-				log.Printf("Error stopping %s: %s", svc, err)
-			} else if resp != "ok" {
-				log.Printf("Error stopping %s: %s", svc, resp)
-			}
+		if !(st.running && time.Since(st.last) >= m.stopAfter) {
+			st.mu.Unlock()
+			return
 		}
+		st.running = false
+		st.timer = nil
+		log.Printf("Service %s idle for %s, stopping", svc, m.stopAfter)
+		// Hold the lock across the stop. sdwd's start inspects the container
+		// before acting and is idempotent; a container mid-teardown still
+		// reports running and healthy, so a start issued while the stop is in
+		// flight is a no-op that returns "ok" — leaving the proxy convinced the
+		// service is up when it is actually down and never restarted. Keeping
+		// the stop under the lock serializes the two ops, so a restarted service
+		// waits for the stop to finish before the start runs.
+		ctx, cancel := context.WithTimeout(context.Background(), stopAttemptTimeout)
+		resp, err := m.wd.Exec(ctx, "stop "+svc)
+		cancel()
+		if err != nil {
+			log.Printf("Error stopping %s: %s", svc, err)
+		} else if resp != "ok" {
+			log.Printf("Error stopping %s: %s", svc, resp)
+		}
+		st.mu.Unlock()
 	})
 }
