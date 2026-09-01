@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
@@ -158,11 +159,9 @@ func main() {
 		TokenLookup:  "cookie:" + cookieName,
 		Skipper: func(c echo.Context) bool {
 			path := c.Path()
-			for _, p := range skipAuth["path"] {
-				if path == p {
+			if slices.Contains(skipAuth["path"], path) {
 					return true
 				}
-			}
 			for _, p := range skipAuth["prefix"] {
 				if strings.HasPrefix(path, p) {
 					return true
@@ -172,7 +171,7 @@ func main() {
 			// secret URL) carry the shared proxy-auth header; let them through
 			// without a JWT. Scoped to the service prefix so the blast radius
 			// is limited to that service even if the header were ever forged.
-			if isProxyAuth(c) && strings.HasPrefix(path, "/cui/") {
+			if isProxyAuth(c) {
 				return true
 			}
 			return false
