@@ -28,7 +28,6 @@ const (
 var managedServices = []string{
 	"stablediff-cuda", // A1111
 	"comfyui",
-	"llama-swap", // LLM
 	"acestep15",
 }
 
