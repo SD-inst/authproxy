@@ -110,6 +110,11 @@ func (p *progress) updater() {
 	lastJobCount := 0
 	lastQueue := 0
 	lastProg := float64(0)
+	// jobActive is true while a job is running (service not NONE). It gates the
+	// ticker: after the service drops to NONE (resetProgress) it is cleared so
+	// the frozen duration/last_active no longer tick. Unlike lastID, it does not
+	// linger past completion (lastID is kept for the GPU_ACTIVE_TIME metric).
+	jobActive := false
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -195,6 +200,14 @@ func (p *progress) updater() {
 		if eta, ok := computeEta(now); ok {
 			etaStr = eta.Truncate(time.Second).String()
 		}
+		// Duration is only meaningful once a job has a baseline (jobStart is set
+		// by the first A1111/CUI progress or a CUI reset). For traffic that
+		// never reports progress (e.g. LLM/TTS) jobStart stays the zero time and
+		// now.Sub would yield a bogus multi-year value, so leave it blank.
+		dur := ""
+		if !jobStart.IsZero() {
+			dur = now.Sub(jobStart).Truncate(time.Second).String()
+		}
 		p.b.Broadcast(events.Packet{
 			Type: events.PROGRESS_UPDATE,
 			Data: ProgressUpdate{
@@ -204,7 +217,7 @@ func (p *progress) updater() {
 				ETA:          etaStr,
 				Description:  desc,
 				LastActive:   now,
-				TaskDuration: now.Sub(jobStart).Truncate(time.Second).String(),
+				TaskDuration: dur,
 			}})
 	}
 
@@ -229,12 +242,15 @@ func (p *progress) updater() {
 			lastStep = 0
 			lastStepTs = time.Time{}
 			stepObs = 0
+			jobActive = false
 			broadcast("")
 		case <-p.resetProgress:
 			// The service dropped to NONE: no active job, so zero the progress
 			// percent only. Keep every other field (description, duration,
-			// last_active) so it stays visible which task was running.
+			// last_active) so it stays visible which task was running. Stop the
+			// ticker (jobActive) so the frozen duration/last_active do not tick.
 			lastProg = 0
+			jobActive = false
 			broadcast("")
 		case sdp := <-p.pchan:
 			if sdp.State.Job == nil {
@@ -247,6 +263,9 @@ func (p *progress) updater() {
 				if *sdp.State.Job != "" {
 					p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
 					jobStart = time.Now()
+					jobActive = true
+				} else {
+					jobActive = false
 				}
 				lastID = *sdp.State.Job
 			}
@@ -328,7 +347,9 @@ func (p *progress) updater() {
 			}
 		case <-ticker.C:
 			// Tick the ETA/duration down each second while a job is running.
-			if lastID != "" {
+			// Stops once the service drops to NONE (jobActive cleared in
+			// resetProgress), so the final duration/last_active freeze.
+			if jobActive {
 				broadcast("")
 			}
 		}
