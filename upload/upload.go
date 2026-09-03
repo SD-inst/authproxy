@@ -66,9 +66,8 @@ type fileItem struct {
 }
 
 var (
-	validateRegexp         = regexp.MustCompile(`[*<>]`)
-	modelRegex             = regexp.MustCompile(`/models/(\d+)`)
-	civitaiDownloadRegex   = regexp.MustCompile(`/api/download/models/(\d+)`)
+	validateRegexp       = regexp.MustCompile(`[*<>]`)
+	modelRegex           = regexp.MustCompile(`/models/(\d+)`)
 )
 
 func JSONOk(c echo.Context, r interface{}) error {
@@ -207,15 +206,7 @@ func modelAllowed(modelType string) bool {
 	return t == "lora" || t == "locon" || t == "dora"
 }
 
-func checkCivitaiDownloadURL(rawURL string) (string, error) {
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return fmt.Errorf("too many redirects")
-			}
-			return nil
-		},
-	}
+func checkCivitaiDownloadURL(client *http.Client, rawURL string) (string, error) {
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return "", err
@@ -280,7 +271,7 @@ func (u *uploader) download(c echo.Context) error {
 			u.dlError("Missing fileId parameter")
 			return nil
 		}
-		downloadURL, err := checkCivitaiDownloadURL(params.URL)
+		downloadURL, err := checkCivitaiDownloadURL(&u.dlclient, params.URL)
 		if err != nil {
 			u.dlError("Error resolving download URL: %s", err)
 			return nil
@@ -472,8 +463,11 @@ func (u *uploader) loadCookies() {
 	if err != nil {
 		log.Printf("Error reading cookie file")
 	}
+	tokenStr := strings.Trim(string(token), "\n")
 	civiturl, _ := url.Parse("https://civitai.com")
-	u.dlclient.Jar.SetCookies(civiturl, []*http.Cookie{{Name: civitaiToken, Value: string(token)}})
+	u.dlclient.Jar.SetCookies(civiturl, []*http.Cookie{{Name: civitaiToken, Value: tokenStr}})
+	civiturl, _ = url.Parse("https://civitai.red")
+	u.dlclient.Jar.SetCookies(civiturl, []*http.Cookie{{Name: civitaiToken, Value: tokenStr}})
 }
 
 func (u *uploader) downloadFile(c echo.Context) error {
