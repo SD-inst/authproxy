@@ -12,17 +12,23 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
+
+	"github.com/rkfg/authproxy/servicequeue"
 )
 
 var (
 	upstreamAddr  = os.Getenv("LLM_PROXY_UPSTREAM")
 	listenAddr    = os.Getenv("LLM_PROXY_LISTEN")
 	defaultAPIKey = os.Getenv("LLM_PROXY_DEFAULT_API_KEY")
-	gracePeriod   = parseDuration(os.Getenv("LLM_PROXY_GRACE_PERIOD"), 10*time.Second)
-	holdTimeout   = parseDuration(os.Getenv("LLM_PROXY_HOLD_TIMEOUT"), 120*time.Second)
+	// gracePeriod is how long the model stays loaded after the last request's
+	// response body closes, so consecutive requests from the same user go
+	// uninterrupted. Mirrors llm.go's waitAfterBody.
+	gracePeriod = parseDuration(os.Getenv("LLM_PROXY_GRACE_PERIOD"), 10*time.Second)
+	// hardCap is the safety net: it frees the slot even if a response body never
+	// closes (stuck upstream connection). Mirrors llm.go's cleanup timeout.
+	hardCap = parseDuration(os.Getenv("LLM_PROXY_HOLD_TIMEOUT"), 5*time.Minute)
 )
 
 func parseDuration(s string, def time.Duration) time.Duration {
@@ -31,47 +37,38 @@ func parseDuration(s string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil {
-		log.Printf("Invalid LLM_PROXY_GRACE_PERIOD %q, using %s", s, def)
+		log.Printf("Invalid duration %q, using %s", s, def)
 		return def
 	}
 	return d
 }
 
-type proxyState struct {
-	mu            sync.Mutex
-	cv            *sync.Cond
-	busy          bool
-	currentModel  string
-	currentAPIKey string
-	inFlight      int // number of active requests in the current epoch
-	epoch         int // bumped whenever the slot is freed; stale requestDone becomes a no-op
-	releaseTimer  *time.Timer // grace timer, armed after the last request finishes
-	releaseGen    int
-	holdTimer     *time.Timer // hard cap, frees the slot even if an upstream connection is stuck
-	holdGen       int
+// llmProxy holds the shared state. apiKey/model are guarded by the ServiceQueue
+// mutex (they are only touched while sq is locked).
+type llmProxy struct {
+	sq          *servicequeue.ServiceQueue
+	target      *url.URL
+	client      http.Client
+	apiKey      string
+	model       string
+	heldSince   time.Time
+	heldRequest int
 }
 
-func newProxyState() *proxyState {
-	ps := &proxyState{}
-	ps.cv = sync.NewCond(&ps.mu)
-	return ps
-}
-
-// isLLMPath mirrors llm.go's isLLMPath
 func isLLMPath(path string) bool {
 	return (strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/completions") ||
 		strings.HasSuffix(path, "/v1/internal/encode") || strings.HasSuffix(path, "/v1/embeddings") ||
 		strings.HasPrefix(path, "/upstream/")) && !strings.HasSuffix(path, ".js")
 }
 
-// isLookupPath matches the authproxy route /upstream/:model/v1/streams/lookup.
-// Any method: the web UI polls it, and the original GET-only stub leaked POST traffic.
+// isLookupPath matches the /upstream/:model/v1/streams/lookup route.
+// Any method: the web UI polls it, and a method-restricted stub leaked traffic.
 func isLookupPath(path string) bool {
 	return strings.HasPrefix(path, "/upstream/") &&
 		strings.HasSuffix(path, "/v1/streams/lookup")
 }
 
-// isToolsPath matches the authproxy route /upstream/:model/tools.
+// isToolsPath matches the /upstream/:model/tools route.
 // Any method: the web UI polls it with POST, which a GET-only stub let through.
 func isToolsPath(path string) bool {
 	return strings.HasPrefix(path, "/upstream/") &&
@@ -123,137 +120,7 @@ func getAPIKey(r *http.Request) string {
 	return key
 }
 
-// acquire blocks until this request may proceed and returns the epoch of the
-// held slot this request joined.
-// Re-enters if the same api key is active (and the held model is empty or matches).
-// Cancels the release timer so the grace period resets on every new request,
-// and re-arms the hold cap so a stuck upstream connection cannot hold the slot forever.
-func (ps *proxyState) acquire(model, apiKey string) int {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	for {
-		if !ps.busy {
-			ps.busy = true
-			ps.epoch++
-			ps.currentModel = model
-			ps.currentAPIKey = apiKey
-			ps.inFlight = 1
-			ps.resetHoldTimerLocked()
-			return ps.epoch
-		}
-		// mirrors llm.go predicate: apiKey == prevKey && (result.model == "" || prevModel == model)
-		// a request without a model cannot switch the loaded one, so it joins the current holder
-		if apiKey == ps.currentAPIKey && (model == "" || ps.currentModel == "" || ps.currentModel == model) {
-			ps.stopReleaseTimerLocked()
-			ps.inFlight++
-			ps.currentModel = model // mirrors result.model = model; may be ""
-			ps.resetHoldTimerLocked()
-			return ps.epoch
-		}
-		log.Printf("Queueing: model=%s key=%s, held model=%s key=%s",
-			model, redactKey(apiKey), ps.currentModel, redactKey(ps.currentAPIKey))
-		ps.cv.Wait()
-	}
-}
-
-// requestDone is called after the response body has been fully sent.
-// The release is only scheduled by the last request to finish: with a zero
-// delay it releases immediately, otherwise a grace timer is armed.
-// A request whose epoch is stale (the hold cap already freed the slot) is a no-op.
-func (ps *proxyState) requestDone(epoch int, delay time.Duration) {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	if epoch != ps.epoch {
-		return
-	}
-	if ps.inFlight <= 0 {
-		return
-	}
-	ps.inFlight--
-	if ps.inFlight > 0 {
-		return
-	}
-
-	ps.stopHoldTimerLocked()
-	ps.stopReleaseTimerLocked()
-	if delay <= 0 {
-		ps.releaseLocked()
-		return
-	}
-	ps.releaseGen++
-	gen := ps.releaseGen
-	ps.releaseTimer = time.AfterFunc(delay, func() {
-		ps.mu.Lock()
-		defer ps.mu.Unlock()
-		if ps.releaseGen != gen || !ps.busy || ps.inFlight != 0 {
-			return
-		}
-		ps.releaseTimer = nil
-		ps.releaseLocked()
-	})
-}
-
-// releaseLocked clears the held model/key, invalidates the epoch (so any still
-// finishing request of the old epoch becomes a no-op) and wakes waiters.
-// Callers must hold ps.mu.
-func (ps *proxyState) releaseLocked() {
-	ps.busy = false
-	ps.epoch++
-	ps.inFlight = 0
-	ps.currentModel = ""
-	ps.currentAPIKey = ""
-	ps.cv.Broadcast()
-}
-
-// stopReleaseTimerLocked cancels an armed release timer. Callers must hold ps.mu.
-func (ps *proxyState) stopReleaseTimerLocked() {
-	if ps.releaseTimer != nil {
-		ps.releaseTimer.Stop()
-		ps.releaseTimer = nil
-	}
-	ps.releaseGen++
-}
-
-// resetHoldTimerLocked arms the hard cap: after holdTimeout the slot is freed
-// even if in-flight requests never finish (stuck/lingering upstream connection).
-// Callers must hold ps.mu.
-func (ps *proxyState) resetHoldTimerLocked() {
-	ps.stopHoldTimerLocked()
-	ps.holdGen++
-	gen := ps.holdGen
-	ps.holdTimer = time.AfterFunc(holdTimeout, func() {
-		ps.mu.Lock()
-		defer ps.mu.Unlock()
-		if ps.holdGen != gen || !ps.busy {
-			return
-		}
-		log.Printf("Hold timeout: releasing stuck slot, model=%s key=%s",
-			ps.currentModel, redactKey(ps.currentAPIKey))
-		ps.stopHoldTimerLocked()
-		ps.stopReleaseTimerLocked()
-		ps.releaseLocked()
-	})
-}
-
-// stopHoldTimerLocked cancels an armed hold-cap timer. Callers must hold ps.mu.
-func (ps *proxyState) stopHoldTimerLocked() {
-	if ps.holdTimer != nil {
-		ps.holdTimer.Stop()
-		ps.holdTimer = nil
-	}
-	ps.holdGen++
-}
-
-func redactKey(key string) string {
-	if len(key) <= 8 {
-		return "***"
-	}
-	return key[:8] + "..."
-}
-
-func newHandler(ps *proxyState, rp *httputil.ReverseProxy) *http.ServeMux {
+func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 	serveMux := http.NewServeMux()
 
 	serveMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -276,6 +143,11 @@ func newHandler(ps *proxyState, rp *httputil.ReverseProxy) *http.ServeMux {
 			return
 		}
 
+		// Acquire the slot (mirrors llm.go's Before interceptor). The slot is
+		// released by the ModifyResponse hook (body close -> grace) or the hard
+		// cap, not by ServeHTTP returning.
+		sq := lp.sq
+		sq.Lock()
 		var model string
 		if r.Method == "POST" {
 			model = extractModel(r)
@@ -284,18 +156,50 @@ func newHandler(ps *proxyState, rp *httputil.ReverseProxy) *http.ServeMux {
 			}
 		}
 		apiKey := getAPIKey(r)
-
-		epoch := ps.acquire(model, apiKey)
+		if r.Method == "POST" {
+			var queuedLogged bool
+			sq.AwaitWithPredicateAndDescription(servicequeue.LLM, true, func() bool {
+				// Re-enter only for the same user (key) that does not switch the
+				// model; a different user is queued, not allowed to share the slot.
+				canReent := lp.apiKey == apiKey && (model == "" || lp.model == "" || lp.model == model)
+				// Log once when the request must wait, with neutral wording (this is
+				// normal queuing behind another user, not an error), instead of on
+				// every queue re-check, which previously spammed the log.
+				if !canReent && !queuedLogged {
+					queuedLogged = true
+					log.Printf("queued behind holder: my key=%q held key=%q; my model=%q held model=%q",
+						apiKey, lp.apiKey, model, lp.model)
+				}
+				return canReent
+			}, model)
+			lp.apiKey = apiKey
+			lp.heldRequest++
+			if lp.model != model {
+				// Model switched (or first holder): start a fresh hold epoch.
+				lp.heldSince = time.Now()
+			}
+			lp.model = model
+		} else {
+			sq.Await(servicequeue.LLM, false)
+		}
+		sq.CancelCleanup()
+		sq.CF = &servicequeue.CleanupFunc{
+			F: func() {
+				lp.client.Get(lp.target.JoinPath("/unload").String())
+			},
+			Service: servicequeue.LLM,
+		}
+		// Arm the hard cap now, on slot acquisition. ModifyResponse re-arms it
+		// (reset) when the upstream actually responds, preserving "cap from
+		// response start" for live requests; but if the upstream hangs BEFORE
+		// responding, ModifyResponse never runs and this is the only timer that
+		// will free the slot, so a wedged connection no longer blocks everyone.
+		sq.SetCleanup(hardCap)
+		sq.Unlock()
 
 		log.Printf("Serving: model=%s", model)
 
-		// ServeHTTP blocks until the upstream body (incl. streaming) is fully sent,
-		// so releasing here is after the response completes. If the connection
-		// lingers longer than holdTimeout, the hold cap frees the slot first and
-		// this requestDone becomes a no-op (stale epoch).
 		rp.ServeHTTP(w, r)
-
-		ps.requestDone(epoch, graceDelay(r))
 	})
 
 	serveMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -318,7 +222,20 @@ func main() {
 		log.Fatalf("Invalid upstream URL: %s", err)
 	}
 
-	ps := newProxyState()
+	// The ServiceQueue broadcasts SvcUpdate to svcChan; we have no UI here, so
+	// drain it to keep the sends from blocking.
+	svcChan := make(chan servicequeue.SvcUpdate, 1000)
+	go func() {
+		for range svcChan {
+		}
+	}()
+	sq := servicequeue.NewServiceQueue(svcChan)
+
+	lp := &llmProxy{
+		sq:     sq,
+		target: upstream,
+		client: http.Client{},
+	}
 
 	reverseProxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -327,8 +244,32 @@ func main() {
 			delete(req.Header, "X-Forwarded-For")
 			req.Header.Set("X-Forwarded-For", req.RemoteAddr)
 		},
+		// Mirrors llm.go's After interceptor: arm the hard-cap cleanup and wrap
+		// the response body so the slot is released when the body closes (grace)
+		// instead of when ServeHTTP returns.
+		ModifyResponse: func(resp *http.Response) error {
+			return sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
+				return isLLMPath(path)
+			}, hardCap, true, graceDelay)(resp.Request, resp)
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Proxy error: %s", err)
+			// The request failed without (or before) a response, so the
+			// ModifyResponse body-close release never runs and the slot would be
+			// held until the hard cap. Release it here the same way the body-close
+			// does, so a failed request doesn't wedge the proxy for everyone.
+			if r.Method == "POST" && isLLMPath(r.URL.Path) {
+				sq.Lock()
+				sq.CancelCleanup()
+				d := graceDelay(r)
+				if d > 0 {
+					sq.SetService(servicequeue.WAIT)
+					sq.SetCleanup(d)
+				} else {
+					sq.SetService(servicequeue.NONE)
+				}
+				sq.Unlock()
+			}
 			w.WriteHeader(http.StatusBadGateway)
 			fmt.Fprintf(w, "Proxy error: %s\n", err)
 		},
@@ -336,7 +277,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:         listenAddr,
-		Handler:      newHandler(ps, reverseProxy),
+		Handler:      newHandler(lp, reverseProxy),
 		ReadTimeout:  600 * time.Second,
 		WriteTimeout: 600 * time.Second,
 		IdleTimeout:  120 * time.Second,

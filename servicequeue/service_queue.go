@@ -119,7 +119,10 @@ func (sq *ServiceQueue) maybeUpdateQueue(ql int32) <-chan bool {
 		time.After(time.Second)
 		ql2 := sq.waitqueue.Load()
 		if ql == ql2 {
-			sq.svcChan <- SvcUpdate{Type: IGNORE, WaitType: sq.waitedService, Queue: ql}
+			sq.Lock()
+			waited := sq.waitedService
+			sq.Unlock()
+			sq.svcChan <- SvcUpdate{Type: IGNORE, WaitType: waited, Queue: ql}
 			sent <- true
 		} else {
 			sent <- false
@@ -167,7 +170,9 @@ func (sq *ServiceQueue) SetCleanup(d time.Duration) {
 	log.Printf("*** Set cleanup timer id: %d, dur: %s ***", sq.cleanupID, d.String())
 	sq.cleanupTimer = time.AfterFunc(d, func() {
 		log.Printf("*** Running cleanup timer id: %d after %s ***", sq.cleanupID, d.String())
+		sq.Lock()
 		sq.SetService(NONE)
+		sq.Unlock()
 	})
 }
 
