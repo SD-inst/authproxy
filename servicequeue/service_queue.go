@@ -69,7 +69,12 @@ type ServiceQueue struct {
 	service           SvcType
 	prevService       SvcType
 	waitedService     SvcType
-	CF                *CleanupFunc // executes after await if service changed
+	// holdCount is the number of in-flight requests currently holding the slot
+	// (acquired, or re-entered under the same holder). A request calls Hold at
+	// acquisition and Release at body-close/error; the slot is only freed when
+	// the last holder leaves. Caller must hold the lock.
+	holdCount int
+	CF          *CleanupFunc // executes after await if service changed
 	svcChan           chan<- SvcUpdate
 	waitqueue         atomic.Int32
 	cleanupCV         *sync.Cond
@@ -184,6 +189,36 @@ func (sq *ServiceQueue) CancelCleanup() {
 	sq.cleanupTimer = nil
 }
 
+// Hold records that one more request is now holding the slot. It must be paired
+// with a later Release (one per request: Hold at acquisition, Release at
+// body-close or proxy error). Caller must hold the lock.
+func (sq *ServiceQueue) Hold() {
+	sq.holdCount++
+}
+
+// Release marks one holder as done. When it is the last holder, the slot is
+// freed (WAIT+grace if afterBody > 0, else NONE); otherwise the slot stays held
+// for the remaining holders and the hard cap is re-armed so they stay bounded.
+// Caller must hold the lock.
+func (sq *ServiceQueue) Release(hardCap, afterBody time.Duration) {
+	if sq.holdCount > 0 {
+		sq.holdCount--
+	}
+	if sq.holdCount > 0 {
+		log.Printf("*** Release: %d holder(s) remaining, keeping slot ***", sq.holdCount)
+		sq.SetCleanup(hardCap)
+		return
+	}
+	log.Printf("*** Release: last holder, freeing slot ***")
+	sq.CancelCleanup()
+	if afterBody > 0 {
+		sq.SetService(WAIT)
+		sq.SetCleanup(afterBody)
+	} else {
+		sq.SetService(NONE)
+	}
+}
+
 func (sq *ServiceQueue) SendDescriptionUpdate(t SvcType, description string) {
 	sq.svcChan <- SvcUpdate{Type: t, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: description}
 }
@@ -211,6 +246,10 @@ func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
 	case NONE:
 		sq.waitedService = NONE
 		sq.service = NONE
+		// Reaching NONE means no holder owns the slot. Reset the count so a
+		// holder that leaked (freed by the hard cap without a Release) doesn't
+		// leave a stale count that would block the next acquisition.
+		sq.holdCount = 0
 	default:
 		sq.service = s
 	}
@@ -245,24 +284,16 @@ func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(p
 				resp.Body = BodyWrapper{ReadCloser: resp.Body, onClose: func() {
 					log.Printf("*** Closing body ***")
 					sq.Lock()
-					sq.CancelCleanup()
+					var afterBody time.Duration
 					if waitAfterBody != nil {
-						waitDuration := waitAfterBody(req)
-						if waitDuration > 0 {
-							sq.SetService(WAIT)
-							sq.SetCleanup(waitDuration)
-						} else {
-							sq.SetService(NONE)
-						}
-					} else {
-						sq.SetService(NONE)
+						afterBody = waitAfterBody(req)
 					}
+					sq.Release(timeout, afterBody)
 					sq.Unlock()
 				}}
 			} else {
 				log.Printf("*** No response set ***")
-				sq.CancelCleanup()
-				sq.SetService(NONE)
+				sq.Release(timeout, 0)
 				sq.Unlock()
 				return nil
 			}

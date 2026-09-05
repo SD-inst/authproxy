@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +50,17 @@ func newTestProxy(upstream *url.URL) *httptest.Server {
 				return isLLMPath(path)
 			}, hardCap, true, graceDelay)(resp.Request, resp)
 		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// Mirror the real proxy: a canceled/failed request releases its
+			// holder via the reference count.
+			if r.Method == "POST" && isLLMPath(r.URL.Path) {
+				sq.Lock()
+				sq.Release(hardCap, graceDelay(r))
+				sq.Unlock()
+			}
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprintf(w, "Proxy error: %s\n", err)
+		},
 	}
 	return httptest.NewServer(newHandler(lp, rp))
 }
@@ -75,6 +87,34 @@ func doRequest(t *testing.T, proxyURL, path, model, key string) (start, end time
 	}
 	end = time.Now()
 	return start, end, nil
+}
+
+// startCancelable starts a request with a cancelable context. It returns a
+// cancel function and a channel that receives the finish time (when the request
+// completes or is canceled).
+func startCancelable(t *testing.T, proxyURL, path, model, key string) (cancel func(), done <-chan time.Time) {
+	t.Helper()
+	ch := make(chan time.Time, 1)
+	body := `{"prompt":"x"}`
+	if model != "" {
+		body = fmt.Sprintf(`{"model":%q,"prompt":"x"}`, model)
+	}
+	req, err := http.NewRequest("POST", proxyURL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	req.Header.Set("Authorization", key)
+	ctx, cancelFn := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}
+		ch <- time.Now()
+	}()
+	return cancelFn, ch
 }
 
 // A1 and A2 (same user) run concurrently: A2 re-enters the queue without waiting.
@@ -288,6 +328,53 @@ func TestQueueFreesAfterGrace(t *testing.T) {
 	}
 	if ce.Sub(cs) > 2*sleep {
 		t.Errorf("second request should pass immediately, took %v", ce.Sub(cs))
+	}
+}
+
+// Three parallel requests from user A hold the slot (re-enter). Two are canceled
+// client-side; the slot must stay held while the third is still in flight, so a
+// different user B is queued until the last A finishes + grace.
+func TestCanceledRequestsDontFreeSlotEarly(t *testing.T) {
+	const sleep = 600 * time.Millisecond
+	const grace = 300 * time.Millisecond
+
+	upstream := newFakeUpstream(t, sleep)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	oldGrace := gracePeriod
+	gracePeriod = grace
+	defer func() { gracePeriod = oldGrace }()
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	// A1, A2, A3 (user A, model llama) all hold the slot (re-enter).
+	cancelA1, _ := startCancelable(t, proxy.URL, "/v1/chat/completions", "llama", "keyA")
+	cancelA2, _ := startCancelable(t, proxy.URL, "/v1/chat/completions", "llama", "keyA")
+	_, doneA3 := startCancelable(t, proxy.URL, "/v1/chat/completions", "llama", "keyA")
+
+	// Let all three acquire the slot.
+	time.Sleep(150 * time.Millisecond)
+
+	// Cancel A1 and A2. They release via the reference count, but A3 is still in
+	// flight, so the slot must stay held.
+	cancelA1()
+	cancelA2()
+
+	// B (user B, model mistral) must be queued while A3 is in flight.
+	bs, be, err := doRequest(t, proxy.URL, "/v1/chat/completions", "mistral", "keyB")
+	if err != nil {
+		t.Fatalf("B failed: %v", err)
+	}
+	_ = bs
+
+	// A3 finished (with the fix, B only finishes after A3 + grace).
+	a3e := <-doneA3
+
+	// B must not finish before A3 + grace.
+	if be.Before(a3e.Add(grace - 50*time.Millisecond)) {
+		t.Errorf("B released before A3 finished + grace: be=%v a3e=%v", be, a3e)
 	}
 }
 

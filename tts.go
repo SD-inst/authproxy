@@ -24,6 +24,7 @@ func newTTSProxy(ttsurl *url.URL, sq *servicequeue.ServiceQueue, wd *watchdog.Wa
 						wd.Send("restart tts")
 					},
 					Service: servicequeue.TTS}
+				sq.Hold()
 			}
 		},
 		After: sq.ServiceCloser(servicequeue.TTS, func(path string) bool {

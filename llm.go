@@ -98,6 +98,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 			} else {
 				sq.Await(servicequeue.LLM, false)
 			}
+			sq.Hold()
 			sq.CancelCleanup() // cancel potential WAIT/LLM cleanup
 			sq.CF = &servicequeue.CleanupFunc{
 				F: func() {

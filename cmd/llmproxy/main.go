@@ -182,6 +182,7 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		} else {
 			sq.Await(servicequeue.LLM, false)
 		}
+		sq.Hold()
 		sq.CancelCleanup()
 		sq.CF = &servicequeue.CleanupFunc{
 			F: func() {
@@ -255,19 +256,12 @@ func main() {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Proxy error: %s", err)
 			// The request failed without (or before) a response, so the
-			// ModifyResponse body-close release never runs and the slot would be
-			// held until the hard cap. Release it here the same way the body-close
-			// does, so a failed request doesn't wedge the proxy for everyone.
+			// ModifyResponse body-close release never runs. Release the holder via
+			// the reference count (same path as the body-close), so a failed request
+			// only frees the slot when it is the last holder.
 			if r.Method == "POST" && isLLMPath(r.URL.Path) {
 				sq.Lock()
-				sq.CancelCleanup()
-				d := graceDelay(r)
-				if d > 0 {
-					sq.SetService(servicequeue.WAIT)
-					sq.SetCleanup(d)
-				} else {
-					sq.SetService(servicequeue.NONE)
-				}
+				sq.Release(hardCap, graceDelay(r))
 				sq.Unlock()
 			}
 			w.WriteHeader(http.StatusBadGateway)
