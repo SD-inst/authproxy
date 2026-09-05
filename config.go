@@ -27,6 +27,12 @@ type Config struct {
 	// is server-only (never sent to or visible to a browser), so a client
 	// cannot forge a valid bypass header.
 	ProxyAuthSecret string `yaml:"proxy_auth_secret" description:"Shared secret Caddy sends to bypass JWT on gated service routes"`
+	// IPBlacklist is a list of client IPs or CIDR ranges to drop at the
+	// connection level. The client IP is taken from the proxy headers
+	// (X-Forwarded-For / X-Real-IP) since the physical peer is the upstream
+	// proxy. A matching request gets its connection severed immediately, with
+	// no HTTP status line or response headers sent.
+	IPBlacklist []string `yaml:"ip_blacklist" description:"Client IPs or CIDR ranges to drop immediately (connection closed, no response)"`
 }
 
 var config = Config{

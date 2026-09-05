@@ -152,6 +152,14 @@ func main() {
 		log.Fatalf("Error loading ACL: %s", err)
 	}
 	e := echo.New()
+	// The IP blacklist runs first (outermost) so a blacklisted client's
+	// connection is severed before the JWT, logger, or ACL middlewares touch
+	// it — the drop is silent, with no response ever written.
+	bl, err := buildIPBlacklist(config.IPBlacklist)
+	if err != nil {
+		log.Fatal(err)
+	}
+	e.Use(ipBlacklistMiddleware(bl))
 	mchan := metrics.NewMetrics(e, config.PushPassword)
 	e.Use(echojwt.WithConfig(echojwt.Config{
 		SigningKey:   []byte(params.JWTSecret),
