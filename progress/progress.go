@@ -74,10 +74,11 @@ type progress struct {
 	sq          *servicequeue.ServiceQueue
 	resetCUI    chan struct{}
 	resetProgress chan struct{}
+	startJob    chan struct{}
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string, sq *servicequeue.ServiceQueue) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq, resetCUI: make(chan struct{}, 1), resetProgress: make(chan struct{}, 1)}
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq, resetCUI: make(chan struct{}, 1), resetProgress: make(chan struct{}, 1), startJob: make(chan struct{}, 1)}
 }
 
 // ResetCUI resets the CUI progress state and all ETA timers at task start
@@ -245,19 +246,35 @@ func (p *progress) updater() {
 			jobActive = false
 			broadcast("")
 		case <-p.resetProgress:
-			// The service dropped to NONE: no active job, so zero the progress
-			// percent only. Keep every other field (description, duration,
-			// last_active) so it stays visible which task was running. Stop the
-			// ticker (jobActive) so the frozen duration/last_active do not tick.
+			// The service dropped to NONE or WAIT: the active job (if any) just
+			// ended, so credit its duration to the GPU_ACTIVE_TIME counter before
+			// clearing the baseline. jobStart holds when the job began; guarding
+			// on jobActive avoids crediting a bare NONE->active->NONE blip with
+			// no real job.
+			if !jobStart.IsZero() && jobActive {
+				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
+			}
 			lastProg = 0
+			lastProgTs = time.Time{}
+			jobStart = time.Time{}
 			jobActive = false
 			broadcast("")
+		case <-p.startJob:
+			// Service transitioned from NONE/WAIT to an active service:
+			// start the duration timer.
+			jobStart = time.Now()
+			jobActive = true
 		case sdp := <-p.pchan:
 			if sdp.State.Job == nil {
 				continue
 			}
 			if lastID != *sdp.State.Job {
-				if lastID != "" {
+				// The previous job ended because this new one replaced it (CUI
+				// keeps the slot without a NONE between jobs). Credit its duration
+				// first; jobStart holds when it began. If the job already ended
+				// via NONE/WAIT, jobStart was zeroed there and this is skipped, so
+				// a job is never credited twice.
+				if lastID != "" && !jobStart.IsZero() {
 					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
 				}
 				if *sdp.State.Job != "" {
@@ -265,6 +282,7 @@ func (p *progress) updater() {
 					jobStart = time.Now()
 					jobActive = true
 				} else {
+					jobStart = time.Time{}
 					jobActive = false
 				}
 				lastID = *sdp.State.Job
@@ -394,15 +412,23 @@ func (p *progress) serviceUpdater() {
 	var lastDescription string
 	var lastPrevService servicequeue.SvcType
 	var lastPrevWaitService servicequeue.SvcType
+	var prevSvcType servicequeue.SvcType
 	for svc := range p.svcChan {
-		if svc.Type == servicequeue.NONE {
-			// Service is NONE: no active job, so reset the progress to 0.
+		if svc.Type == servicequeue.NONE || svc.Type == servicequeue.WAIT {
+			// Service is NONE or WAIT: no active job, so reset the progress.
 			// Non-blocking: if the updater is already resetting, drop it.
 			select {
 			case p.resetProgress <- struct{}{}:
 			default:
 			}
+		} else if prevSvcType == servicequeue.NONE || prevSvcType == servicequeue.WAIT {
+			// Transitioned from NONE/WAIT to an active service: start the timer.
+			select {
+			case p.startJob <- struct{}{}:
+			default:
+			}
 		}
+		prevSvcType = svc.Type
 		resp := p.b.State(events.SERVICE_UPDATE)
 		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue}
 		if svc.Description != "" {

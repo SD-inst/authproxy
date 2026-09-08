@@ -13,8 +13,12 @@ import (
 	"github.com/rkfg/authproxy/servicequeue"
 )
 
+// newCUIProxy builds the ComfyUI proxy with the owner-injection Before hook, so
+// the /prompt request carries the X-Authproxy-User header. The same proxy is
+// also used for the /cui/ws and /cui/api/jobs routes, where the header is a
+// harmless no-op (a task is not created through them).
 func newCUIProxy(cuiurl *url.URL) echo.MiddlewareFunc {
-	return proxy.NewProxyWrapper(cuiurl, nil)
+	return proxy.NewProxyWrapper(cuiurl, &proxy.Interceptor{Before: injectUser})
 }
 
 func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL, pr progress.CUIReseter) {

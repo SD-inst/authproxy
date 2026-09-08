@@ -40,8 +40,12 @@ var params struct {
 	DowntimeFile   string `long:"downtime-file" description:"Path to the downtime status file; a JSON object with a \"started\" field enables downtime mode (no container starts, services return 502)"`
 }
 
+// sdProxy is the proxy to SD_URL with the owner-injection Before hook, so every
+// A1111-bound request (Gradio UI + /sdapi API) carries the X-Authproxy-User header.
+var sdProxy = proxy.NewProxyWrapperStr(SD_URL, &proxy.Interceptor{Before: injectUser})
+
 var domains = map[string]echo.MiddlewareFunc{
-	"":               proxy.NewProxyWrapperStr(SD_URL, nil),
+	"":               sdProxy,
 	"acestep.":       proxy.NewProxyWrapperStr(AS10_URL, nil),
 	"as15.":          proxy.NewProxyWrapperStr(AS15_URL, nil),
 	"ovi.":           proxy.NewProxyWrapperStr(OVI_URL, nil),
@@ -53,7 +57,7 @@ var domains = map[string]echo.MiddlewareFunc{
 
 var skipAuth = map[string][]string{
 	"path": {
-		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep15/join", "/acestep15/leave", "/ovi/join", "/ovi/leave", "/q/status.json",
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/internal/job_start", "/internal/job_end", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep15/join", "/acestep15/leave", "/ovi/join", "/ovi/leave", "/q/status.json",
 	},
 	"prefix": {
 		"/v1/", "/sdapi/",
@@ -233,6 +237,33 @@ func main() {
 		sq.SetCleanupProgress(true)
 		return nil
 	})
+	// Per-user task time limit timer. A service (A1111/ComfyUI) reports
+	// job_start/job_end; the timer aborts the job once the owner's limit is hit.
+	jt := NewJobTimer(config.taskMaxLifetime())
+	jt.Run()
+	e.POST("/internal/job_start", func(c echo.Context) error {
+		var p struct {
+			Service string `json:"service"`
+			TaskID  string `json:"task_id"`
+			Owner   string `json:"owner"`
+		}
+		if err := c.Bind(&p); err != nil || p.TaskID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "task_id required"})
+		}
+		jt.Start(p.Service, p.TaskID, p.Owner)
+		return nil
+	})
+	e.POST("/internal/job_end", func(c echo.Context) error {
+		var p struct {
+			Service string `json:"service"`
+			TaskID  string `json:"task_id"`
+		}
+		if err := c.Bind(&p); err != nil || p.TaskID == "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "task_id required"})
+		}
+		jt.End(p.TaskID)
+		return nil
+	})
 	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken, sq)
 	pr.AddHandlers(e)
 	pr.Start(sq)
@@ -284,7 +315,7 @@ func main() {
 			e.Group(d, earlyCheckMiddleware(d), trail, t)
 		}
 	}
-	e.Group("/sdapi", m.ensureService("stablediff-cuda"), domains[config.Domain])
+	e.Group("/sdapi", m.ensureService("stablediff-cuda"), sdProxy)
 	addSDQueueHandlers(e, sq)
 	addASQueueHandlers(e, sq)
 	addOviQueueHandlers(e, sq)
