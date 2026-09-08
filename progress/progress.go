@@ -63,18 +63,18 @@ type CUIReseter interface {
 }
 
 type progress struct {
-	b           *events.Broker
-	sdhost      string
-	wd          *watchdog.Watchdog
-	timeout     time.Duration
-	m           chan<- metrics.MetricUpdate
-	svcChan     <-chan servicequeue.SvcUpdate
-	pchan       chan sdprogress
-	statusToken string
-	sq          *servicequeue.ServiceQueue
-	resetCUI    chan struct{}
+	b             *events.Broker
+	sdhost        string
+	wd            *watchdog.Watchdog
+	timeout       time.Duration
+	m             chan<- metrics.MetricUpdate
+	svcChan       <-chan servicequeue.SvcUpdate
+	pchan         chan sdprogress
+	statusToken   string
+	sq            *servicequeue.ServiceQueue
+	resetCUI      chan struct{}
 	resetProgress chan struct{}
-	startJob    chan struct{}
+	startJob      chan struct{}
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string, sq *servicequeue.ServiceQueue) *progress {
@@ -113,7 +113,10 @@ func (p *progress) updater() {
 	lastProg := float64(0)
 	// jobActive is true while a job is running (service not NONE). It gates the
 	// ticker: after the service drops to NONE (resetProgress) it is cleared so
-	// the frozen duration/last_active no longer tick. Unlike lastID, it does not
+	// the frozen duration/last_active no longer tick. It also marks a finished
+	// task: on the drop to WAIT/NONE it credits GPU_ACTIVE_TIME and, being
+	// cleared after the first WAIT/NONE, ensures a task is counted once (the
+	// follow-on WAIT->NONE is not double-counted). Unlike lastID, it does not
 	// linger past completion (lastID is kept for the GPU_ACTIVE_TIME metric).
 	jobActive := false
 	ticker := time.NewTicker(time.Second)
@@ -247,12 +250,15 @@ func (p *progress) updater() {
 			broadcast("")
 		case <-p.resetProgress:
 			// The service dropped to NONE or WAIT: the active job (if any) just
-			// ended, so credit its duration to the GPU_ACTIVE_TIME counter before
-			// clearing the baseline. jobStart holds when the job began; guarding
-			// on jobActive avoids crediting a bare NONE->active->NONE blip with
-			// no real job.
-			if !jobStart.IsZero() && jobActive {
-				p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
+			// ended. Count it as a completed task (regardless of service type) and
+			// credit its duration to GPU_ACTIVE_TIME before clearing the baseline.
+			// Guarding on jobActive skips a bare NONE->active->NONE blip, and
+			// clearing it below keeps the follow-on WAIT->NONE from counting twice.
+			if jobActive {
+				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1}
+				if !jobStart.IsZero() {
+					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
+				}
 			}
 			lastProg = 0
 			lastProgTs = time.Time{}
@@ -278,7 +284,6 @@ func (p *progress) updater() {
 					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
 				}
 				if *sdp.State.Job != "" {
-					p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1} // actually not completed but started but most tasks eventually complete so whatever
 					jobStart = time.Now()
 					jobActive = true
 				} else {
