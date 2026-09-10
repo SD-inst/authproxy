@@ -96,6 +96,10 @@ func (p *progress) updater() {
 	lastProgress := float64(0)
 	lastID := ""
 	jobStart := time.Time{}
+	// lastTaskDuration holds the frozen duration of the most recently
+	// completed task. It is shown (via broadcast) once a job ends and there is
+	// no active baseline, so the UI still knows how long the last task took.
+	lastTaskDuration := time.Duration(0)
 	nodeStart := time.Time{}
 	adjustedNodeStart := time.Time{}
 	lastNode := ""
@@ -211,6 +215,10 @@ func (p *progress) updater() {
 		dur := ""
 		if !jobStart.IsZero() {
 			dur = now.Sub(jobStart).Truncate(time.Second).String()
+		} else if lastTaskDuration > 0 {
+			// No active job: keep showing the last completed task's duration so
+			// the UI still knows how long the most recent task took.
+			dur = lastTaskDuration.Truncate(time.Second).String()
 		}
 		p.b.Broadcast(events.Packet{
 			Type: events.PROGRESS_UPDATE,
@@ -257,7 +265,8 @@ func (p *progress) updater() {
 			if jobActive {
 				p.m <- metrics.MetricUpdate{Type: metrics.TASKS_COMPLETED, Value: 1}
 				if !jobStart.IsZero() {
-					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
+					lastTaskDuration = time.Since(jobStart)
+					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: lastTaskDuration.Seconds()}
 				}
 			}
 			lastProg = 0
@@ -281,7 +290,8 @@ func (p *progress) updater() {
 				// via NONE/WAIT, jobStart was zeroed there and this is skipped, so
 				// a job is never credited twice.
 				if lastID != "" && !jobStart.IsZero() {
-					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: time.Since(jobStart).Seconds()}
+					lastTaskDuration = time.Since(jobStart)
+					p.m <- metrics.MetricUpdate{Type: metrics.GPU_ACTIVE_TIME, Value: lastTaskDuration.Seconds()}
 				}
 				if *sdp.State.Job != "" {
 					jobStart = time.Now()
