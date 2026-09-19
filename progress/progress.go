@@ -508,6 +508,7 @@ func (p *progress) handleCUIProgress(c echo.Context) error {
 }
 
 type statusJSON struct {
+	Description     string  `json:"description"`
 	Progress        float64 `json:"progress"`
 	TaskQueue       int     `json:"task_queue"`
 	ServiceQueue    int32   `json:"service_queue"`
@@ -526,6 +527,7 @@ func (p *progress) handleStatusJSON(c echo.Context) error {
 		}
 	}
 
+	var description string
 	var progProgress float64
 	var progQueued int
 	var progETA string
@@ -533,11 +535,12 @@ func (p *progress) handleStatusJSON(c echo.Context) error {
 	progResp := p.b.State(events.PROGRESS_UPDATE)
 	if progResp != nil {
 		if pkt, ok := progResp.(events.Packet); ok {
-			if pu, ok := pkt.Data.(ProgressUpdate); ok {
-				progProgress = pu.Progress
-				progQueued = pu.Queued
-				progETA = pu.ETA
-			}
+		if pu, ok := pkt.Data.(ProgressUpdate); ok {
+			progProgress = pu.Progress
+			progQueued = pu.Queued
+			progETA = pu.ETA
+			description = pu.Description
+		}
 		}
 	}
 
@@ -562,7 +565,17 @@ func (p *progress) handleStatusJSON(c echo.Context) error {
 		}
 	}
 
+	// The service-level description is persistent (never cleared on NONE) and
+	// covers every service (LLM model name, "working", "rendering X/Y steps"),
+	// so it is the authoritative source for what the web shows; the
+	// progress-level description is transient (often empty) and only fills in
+	// if the service one is missing.
+	if su.Description != "" {
+		description = su.Description
+	}
+
 	return c.JSON(http.StatusOK, statusJSON{
+		Description:     description,
 		Progress:        progProgress,
 		TaskQueue:       progQueued,
 		ServiceQueue:    svcQueue,
