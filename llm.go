@@ -184,9 +184,14 @@ func (l *llmbalancer) startMetricCollection() {
 				log.Printf("Error unmarshalling activity event: %s; error: %s", e.Data, err)
 				break
 			}
-			// High-water mark: skip rows we already processed and pick up rows
-			// for events we missed (e.g. SSE reconnect).
-			if evt.ID <= lastID {
+			log.Printf("Activity event: id=%d lastID=%d", evt.ID, lastID)
+			// llama-swap resets its activity ids on restart, and the SSE can
+			// re-deliver an event. Against the high-water mark lastID the id is
+			// one of: lower → counter restarted, reset and catch up; equal →
+			// duplicate (already processed), skip; higher → new, process it.
+			if evt.ID < lastID {
+				lastID = 0
+			} else if evt.ID == lastID {
 				break
 			}
 			rows, err := l.fetchActivityRows(lastID+1, evt.ID)
