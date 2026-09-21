@@ -159,9 +159,10 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		if r.Method == "POST" {
 			var queuedLogged bool
 			sq.AwaitWithPredicateAndDescription(servicequeue.LLM, true, func() bool {
-				// Re-enter only for the same user (key) that does not switch the
-				// model; a different user is queued, not allowed to share the slot.
-				canReent := lp.apiKey == apiKey && (model == "" || lp.model == "" || lp.model == model)
+				// Re-enter only when the requested model matches the held one
+				// (or either side is unknown); a different model is queued
+				// rather than sharing the slot.
+				canReent := model == "" || lp.model == "" || lp.model == model
 				// Log once when the request must wait, with neutral wording (this is
 				// normal queuing behind another user, not an error), instead of on
 				// every queue re-check, which previously spammed the log.
