@@ -7,11 +7,7 @@
             "label": "build",
             "type": "shell",
             "command": "go",
-            "args": [
-                "build",
-                "-ldflags",
-                "-w -s"
-            ],
+            "args": ["build", "-ldflags", "-w -s", "-trimpath"],
             "options": {
                 "env": {
                     "CGO_ENABLED": "0"
