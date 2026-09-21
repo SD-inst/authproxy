@@ -123,6 +123,9 @@ func (u *uploader) postFiles(c echo.Context) error {
 		}
 		return nil
 	case "upload_file":
+		if dir == "" {
+			return JSONErrorMessage(c, 400, "You cannot upload files to the root folder. Open a subfolder (or create one) and upload there.")
+		}
 		file, err := c.FormFile("file")
 		if err != nil {
 			return JSONError(c, 400, err)
@@ -239,6 +242,10 @@ func (u *uploader) download(c echo.Context) error {
 		Dir string `form:"dir"`
 	}
 	c.Bind(&params)
+	if params.Dir == "" {
+		u.dlError("Cannot download files to the root folder. Open a subfolder (or create one) first")
+		return nil
+	}
 	if !validateName(params.Dir) {
 		u.dlError("Invalid directory name: %s", params.Dir)
 		return nil
