@@ -63,6 +63,7 @@ type fileItem struct {
 	Type      string `json:"type"`
 	Name      string `json:"name"`
 	Timestamp int64  `json:"timestamp"`
+	Page      string `json:"page"`
 }
 
 var (
@@ -199,9 +200,27 @@ func (u *uploader) listFiles(c echo.Context) error {
 		} else {
 			fi.Timestamp = info.ModTime().UnixMilli()
 		}
+		if t == "file" {
+			fi.Page = readModelPage(filepath.Join(fullpath, name+".json"))
+		}
 		result = append(result, fi)
 	}
 	return JSONOk(c, result)
+}
+
+func readModelPage(jsonPath string) string {
+	file, err := os.Open(jsonPath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+	var metadata struct {
+		ModelPage string `json:"model page"`
+	}
+	if err := json.NewDecoder(file).Decode(&metadata); err != nil {
+		return ""
+	}
+	return metadata.ModelPage
 }
 
 func modelAllowed(modelType string) bool {

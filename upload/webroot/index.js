@@ -32,6 +32,13 @@ function formatSort(col) {
     return '';
 }
 
+function esc(s) {
+    return s.replace(
+        /[&<>"']/g,
+        (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+    );
+}
+
 async function load() {
     let uplink = '';
     let currentPath = getCurrentPath();
@@ -103,13 +110,16 @@ async function load() {
             </a>
         </td>`;
         } else {
+            const pageIcon = file.page
+                ? `<a href="${esc(file.page)}" target="_blank" rel="noopener noreferrer" title="Open original page"><img src="images/civitai.png" class="page-icon" /></a>`
+                : '';
             row.innerHTML += `<td valign="middle">
-            <a href="download/${encodeURIComponent(
+            <span class="file-line"><span class="page-slot">${pageIcon}</span><a href="download/${encodeURIComponent(
                 currentPath.replace(/\/$/, '')
             )}/${encodeURIComponent(file.name)}.safetensors">
             <span class="filename"><img src="images/file.png" class="icon" /> ${
                 file.name
-            }</span></a></td>
+            }</span></a></span></td>
             <td>${new Date(file.timestamp).toLocaleString()}</td>`;
         }
     }

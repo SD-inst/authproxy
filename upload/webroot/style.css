@@ -6,13 +6,25 @@ body {
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 10px;
+}
+
+.page-slot {
+    width: 1.25rem;
+    margin-right: 0.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .icon {
     max-width: 2rem;
     vertical-align: middle;
     margin-right: 0.1rem;
+}
+
+.page-icon {
+    width: 1.25rem;
+    height: 1.25rem;
 }
 
 .clickable {
