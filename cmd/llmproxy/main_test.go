@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -469,4 +470,159 @@ func TestExtractModelFromPath(t *testing.T) {
 	if m := extractModel(r); m != "my-model" {
 		t.Errorf("expected my-model, got %q", m)
 	}
+}
+
+// vipSet builds the vipKeys map from raw API key strings (SHA-256 hashed),
+// mirroring how LLM_PROXY_VIP_KEYS is configured in production.
+func vipSet(keys ...string) map[[32]byte]bool {
+	m := make(map[[32]byte]bool)
+	for _, k := range keys {
+		m[sha256.Sum256([]byte(k))] = true
+	}
+	return m
+}
+
+// A VIP key's response holds the model for the longer vipGracePeriod, so a
+// different-model non-VIP key must wait until that period expires rather than
+// the shorter gracePeriod.
+func TestVipGracePeriodBlocksDifferentModel(t *testing.T) {
+	const sleep = 300 * time.Millisecond
+	const vipGrace = 900 * time.Millisecond
+
+	upstream := newFakeUpstream(t, sleep)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	oldGrace := gracePeriod
+	oldVip := vipGracePeriod
+	oldKeys := vipKeys
+	gracePeriod = 200 * time.Millisecond
+	vipGracePeriod = vipGrace
+	vipKeys = vipSet("vipkey")
+	defer func() { gracePeriod, vipGracePeriod, vipKeys = oldGrace, oldVip, oldKeys }()
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	var (
+		wg     sync.WaitGroup
+		vs, ve time.Time
+		bs, be time.Time
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
+		bs, be, _ = doRequest(t, proxy.URL, "/v1/chat/completions", "mistral", "normalkey")
+	}()
+	vs, ve, err := doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "vipkey")
+	if err != nil {
+		t.Fatalf("VIP request failed: %v", err)
+	}
+	wg.Wait()
+
+	_ = vs
+	// B (different model, non-VIP) must not be released before the VIP's longer
+	// grace period has fully elapsed after the VIP's response.
+	if be.Before(ve.Add(vipGrace - 100*time.Millisecond)) {
+		t.Errorf("B released too early: B finish=%v VIP finish=%v vipGrace=%v", be, ve, vipGrace)
+	}
+	if be.Sub(bs) > vipGrace+2*sleep+2*time.Second {
+		t.Errorf("B took too long: %v", be.Sub(bs))
+	}
+}
+
+// A non-VIP key requesting the SAME model a VIP holds must not re-enter
+// (intercept) the slot while the VIP's hold is active; it stays queued until the
+// VIP's grace period expires. A normal holder would let a same-model key re-enter.
+func TestVipBlocksSameModelInterception(t *testing.T) {
+	const sleep = 300 * time.Millisecond
+	const vipGrace = 900 * time.Millisecond
+
+	upstream := newFakeUpstream(t, sleep)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	oldGrace := gracePeriod
+	oldVip := vipGracePeriod
+	oldKeys := vipKeys
+	gracePeriod = 200 * time.Millisecond
+	vipGracePeriod = vipGrace
+	vipKeys = vipSet("vipkey")
+	defer func() { gracePeriod, vipGracePeriod, vipKeys = oldGrace, oldVip, oldKeys }()
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	var (
+		wg       sync.WaitGroup
+		nvs, nve time.Time
+		vs, ve   time.Time
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
+		nvs, nve, _ = doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "normalkey") // SAME model as the VIP
+	}()
+	vs, ve, err := doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "vipkey")
+	if err != nil {
+		t.Fatalf("VIP request failed: %v", err)
+	}
+	wg.Wait()
+
+	_ = vs
+	_ = ve
+	// Without the VIP block the same-model non-VIP would re-enter immediately and
+	// finish in ~sleep. With the block it must wait out the VIP's grace period, so
+	// its total time clearly exceeds the (much shorter) sleep.
+	if nve.Sub(nvs) < vipGrace {
+		t.Errorf("non-VIP re-entered the VIP-held model too early: %v (expected >= vipGrace %v)", nve.Sub(nvs), vipGrace)
+	}
+}
+
+// A VIP key can still re-enter the slot it holds (same model, same key) like a
+// normal re-entry; the VIP block only applies to NON-VIP keys.
+func TestVipSameKeyReenters(t *testing.T) {
+	const sleep = 300 * time.Millisecond
+	const vipGrace = 300 * time.Millisecond
+
+	upstream := newFakeUpstream(t, sleep)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	oldGrace := gracePeriod
+	oldVip := vipGracePeriod
+	oldKeys := vipKeys
+	gracePeriod = 200 * time.Millisecond
+	vipGracePeriod = vipGrace
+	vipKeys = vipSet("vipkey")
+	defer func() { gracePeriod, vipGracePeriod, vipKeys = oldGrace, oldVip, oldKeys }()
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	var (
+		wg       sync.WaitGroup
+		v1s, v1e time.Time
+		v2s, v2e time.Time
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
+		v2s, v2e, _ = doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "vipkey")
+	}()
+	v1s, v1e, err := doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "vipkey")
+	if err != nil {
+		t.Fatalf("first VIP request failed: %v", err)
+	}
+	wg.Wait()
+
+	// V2 (same VIP key, same model) must re-enter immediately, not queue.
+	if v2e.Sub(v2s) > 2*sleep {
+		t.Errorf("VIP re-entry was blocked, took %v (expected < %v)", v2e.Sub(v2s), 2*sleep)
+	}
+	_ = v1s
+	_ = v1e
 }

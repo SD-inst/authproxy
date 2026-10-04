@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +28,13 @@ var (
 	// response body closes, so consecutive requests from the same user go
 	// uninterrupted. Mirrors llm.go's waitAfterBody.
 	gracePeriod = parseDuration(os.Getenv("LLM_PROXY_GRACE_PERIOD"), 10*time.Second)
+	// vipGracePeriod is the (longer) hold applied to VIP keys. It falls back to
+	// the normal gracePeriod when LLM_PROXY_VIP_GRACE_PERIOD is unset.
+	vipGracePeriod = parseDuration(os.Getenv("LLM_PROXY_VIP_GRACE_PERIOD"), gracePeriod)
+	// vipKeys holds the SHA-256 hashes of the VIP API keys, parsed from
+	// LLM_PROXY_VIP_KEYS (comma-separated 64-hex-digit digests). Keys are stored
+	// as hashes, never in cleartext.
+	vipKeys = parseVipKeys(os.Getenv("LLM_PROXY_VIP_KEYS"))
 	// hardCap is the safety net: it frees the slot even if a response body never
 	// closes (stuck upstream connection). Mirrors llm.go's cleanup timeout.
 	hardCap = parseDuration(os.Getenv("LLM_PROXY_HOLD_TIMEOUT"), 5*time.Minute)
@@ -41,6 +50,36 @@ func parseDuration(s string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// parseVipKeys parses LLM_PROXY_VIP_KEYS (comma-separated 64-hex-digit SHA-256
+// digests) into a set for O(1) lookup. Malformed entries are skipped with a log.
+func parseVipKeys(s string) map[[32]byte]bool {
+	m := make(map[[32]byte]bool)
+	for _, part := range strings.Split(s, ",") {
+		h := strings.TrimSpace(part)
+		if h == "" {
+			continue
+		}
+		b, err := hex.DecodeString(h)
+		if err != nil || len(b) != 32 {
+			log.Printf("Invalid VIP key hash %q (want 64-hex-digit SHA-256), skipping", h)
+			continue
+		}
+		var k [32]byte
+		copy(k[:], b)
+		m[k] = true
+	}
+	return m
+}
+
+// isVIPKey reports whether the API key is a configured VIP key, matched by its
+// SHA-256 hash against vipKeys.
+func isVIPKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	return vipKeys[sha256.Sum256([]byte(key))]
 }
 
 // llmProxy holds the shared state. apiKey/model are guarded by the ServiceQueue
@@ -75,10 +114,14 @@ func isToolsPath(path string) bool {
 		strings.HasSuffix(path, "/tools")
 }
 
-// graceDelay mirrors llm.go's waitAfterBody
+// graceDelay mirrors llm.go's waitAfterBody. VIP keys hold their model for the
+// longer vipGracePeriod; all other keys use the default gracePeriod.
 func graceDelay(r *http.Request) time.Duration {
 	if r.Method == "POST" &&
 		(strings.Contains(r.URL.Path, "/completions") || strings.Contains(r.URL.Path, "/embeddings")) {
+		if isVIPKey(getAPIKey(r)) {
+			return vipGracePeriod
+		}
 		return gracePeriod
 	}
 	return 0
@@ -163,6 +206,13 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 				// (or either side is unknown); a different model is queued
 				// rather than sharing the slot.
 				canReent := model == "" || lp.model == "" || lp.model == model
+				// A VIP key holds its model exclusively: a non-VIP key may not
+				// intercept (re-enter) the slot while the current holder is VIP, so
+				// it stays queued until the VIP's grace period expires and the slot
+				// is freed. A VIP re-entering its own model is unaffected.
+				if canReent && !isVIPKey(apiKey) && isVIPKey(lp.apiKey) {
+					canReent = false
+				}
 				// Log once when the request must wait, with neutral wording (this is
 				// normal queuing behind another user, not an error), instead of on
 				// every queue re-check, which previously spammed the log.
@@ -287,6 +337,9 @@ func main() {
 	}()
 
 	log.Printf("LLM Proxy listening on %s, upstream: %s", listenAddr, upstreamAddr)
+	if len(vipKeys) > 0 {
+		log.Printf("VIP keys configured: %d, VIP grace period: %s", len(vipKeys), vipGracePeriod)
+	}
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %s", err)
 	}

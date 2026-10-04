@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +31,81 @@ type llmbalancer struct {
 	metricUpdater chan<- metrics.MetricUpdate
 	apiKey        string
 	model         string
+}
+
+// VIP slots for the LLM service. Keys are stored as SHA-256 hashes parsed from
+// LLM_PROXY_VIP_KEYS (comma-separated 64-hex-digit digests). A VIP key holds its
+// model for the longer vipGracePeriod after its last request. When no VIP keys
+// are configured (the default), behaviour is identical to the non-VIP path:
+// isVIPKey always returns false and the grace falls back to llmGracePeriod.
+var (
+	// llmGracePeriod is the default (non-VIP) hold after the last LLM request,
+	// previously hardcoded inline in the After interceptor below.
+	llmGracePeriod = time.Second * 10
+	// vipGracePeriod is the (longer) hold applied to VIP keys; falls back to
+	// llmGracePeriod when LLM_PROXY_VIP_GRACE_PERIOD is unset.
+	vipGracePeriod = parseDuration(os.Getenv("LLM_PROXY_VIP_GRACE_PERIOD"), llmGracePeriod)
+	// vipKeys holds the SHA-256 hashes of the VIP API keys.
+	vipKeys = parseVipKeys(os.Getenv("LLM_PROXY_VIP_KEYS"))
+)
+
+// parseDuration parses a duration string, returning def when s is empty or
+// malformed (logging the error).
+func parseDuration(s string, def time.Duration) time.Duration {
+	if s == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		log.Printf("Invalid duration %q, using %s", s, def)
+		return def
+	}
+	return d
+}
+
+// parseVipKeys parses LLM_PROXY_VIP_KEYS (comma-separated 64-hex-digit SHA-256
+// digests) into a set for O(1) lookup. Malformed entries are skipped with a log.
+func parseVipKeys(s string) map[[32]byte]bool {
+	m := make(map[[32]byte]bool)
+	for _, part := range strings.Split(s, ",") {
+		h := strings.TrimSpace(part)
+		if h == "" {
+			continue
+		}
+		b, err := hex.DecodeString(h)
+		if err != nil || len(b) != 32 {
+			log.Printf("Invalid VIP key hash %q (want 64-hex-digit SHA-256), skipping", h)
+			continue
+		}
+		var k [32]byte
+		copy(k[:], b)
+		m[k] = true
+	}
+	return m
+}
+
+// isVIPKey reports whether the API key is a configured VIP key, matched by its
+// SHA-256 hash against vipKeys.
+func isVIPKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	return vipKeys[sha256.Sum256([]byte(key))]
+}
+
+// llmGraceDelay returns the hold time to apply after the last LLM request body
+// closes. VIP keys hold their model for the longer vipGracePeriod; all other
+// keys use the default llmGracePeriod. Non-POST requests and paths that are not
+// /completions or /embeddings hold for 0 (no grace).
+func llmGraceDelay(req *http.Request) time.Duration {
+	if req.Method == "POST" &&
+		(strings.Contains(req.URL.Path, "/completions") || strings.Contains(req.URL.Path, "/embeddings")) {
+		if isVIPKey(req.Header.Get("Authorization")) {
+			return vipGracePeriod
+		}
+		return llmGracePeriod
+	}
+	return 0
 }
 
 func isLLMPath(path string) bool {
@@ -109,12 +187,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 		},
 		After: sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
 			return isLLMPath(path)
-		}, time.Second*300, true, func(req *http.Request) time.Duration {
-			if (strings.Contains(req.URL.Path, "/completions") || strings.Contains(req.URL.Path, "/embeddings")) && req.Method == "POST" {
-				return time.Second * 10
-			}
-			return 0
-		}),
+		}, time.Second*300, true, llmGraceDelay),
 	})
 	go result.startMetricCollection()
 	return &result
