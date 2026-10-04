@@ -39,6 +39,22 @@ function esc(s) {
     );
 }
 
+function pageIcon(url) {
+    let host;
+    try {
+        host = new URL(url).hostname;
+    } catch {
+        return null;
+    }
+    if (host === 'huggingface.co' || host === 'www.huggingface.co') {
+        return { src: 'images/huggingface.svg', title: 'Hugging Face' };
+    }
+    if (host === 'civitai.com' || host === 'www.civitai.com' || host === 'civitai.red') {
+        return { src: 'images/civitai.png', title: 'CivitAI' };
+    }
+    return null;
+}
+
 async function load() {
     let uplink = '';
     let currentPath = getCurrentPath();
@@ -110,11 +126,12 @@ async function load() {
             </a>
         </td>`;
         } else {
-            const pageIcon = file.page
-                ? `<a href="${esc(file.page)}" target="_blank" rel="noopener noreferrer" title="Open original page"><img src="images/civitai.png" class="page-icon" /></a>`
+            const icon = file.page ? pageIcon(file.page) : null;
+            const pageIconHtml = icon
+                ? `<a href="${esc(file.page)}" target="_blank" rel="noopener noreferrer" title="Open original page (${icon.title})"><img src="${icon.src}" class="page-icon" /></a>`
                 : '';
             row.innerHTML += `<td valign="middle">
-            <span class="file-line"><span class="page-slot">${pageIcon}</span><a href="download/${encodeURIComponent(
+            <span class="file-line"><span class="page-slot">${pageIconHtml}</span><a href="download/${encodeURIComponent(
                 currentPath.replace(/\/$/, '')
             )}/${encodeURIComponent(file.name)}.safetensors">
             <span class="filename"><img src="images/file.png" class="icon" /> ${
