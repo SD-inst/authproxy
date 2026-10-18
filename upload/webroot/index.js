@@ -292,6 +292,10 @@ function init(ws) {
                 break;
             case 'message':
                 toast(data.message, data.type);
+                break;
+            case 'files':
+                load();
+                break;
         }
     };
 }

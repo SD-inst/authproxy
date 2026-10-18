@@ -153,14 +153,25 @@ func (u *uploader) postFiles(c echo.Context) error {
 		}
 		u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_COUNT, Value: 1}
 		u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_SIZE, Value: float64(file.Size)}
-		go func() {
-			err := u.civitdl.UpdateFile(target.Name())
-			if err != nil {
-				log.Printf("Error getting metadata from CivitAI: %s", err)
-			}
-		}()
+		go u.updateFileMetadata(target.Name(), "")
 	}
 	return nil
+}
+
+// updateFileMetadata fills the metadata JSON of a freshly added file and then
+// notifies the clients so the model page link appears without a manual
+// refresh.
+func (u *uploader) updateFileMetadata(filename, sourcePage string) {
+	var err error
+	if sourcePage != "" {
+		err = u.civitdl.UpdateFileFromSource(filename, sourcePage)
+	} else {
+		err = u.civitdl.UpdateFile(filename)
+	}
+	if err != nil {
+		log.Printf("Error getting metadata from CivitAI: %s", err)
+	}
+	u.broker.Broadcast(events.Packet{Type: events.FILES_UPDATE, Ephemeral: true})
 }
 
 func (u *uploader) listFiles(c echo.Context) error {
@@ -438,12 +449,7 @@ func (u *uploader) startDownloader() {
 						u.dlSuccess("File %s downloaded", fn)
 						u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_COUNT, Value: 1}
 						u.m <- metrics.MetricUpdate{Type: metrics.UPLOAD_SIZE, Value: float64(dl)}
-						go func() {
-							err := u.civitdl.UpdateFileFromSource(f.Name(), task.page)
-							if err != nil {
-								log.Printf("Error getting metadata from CivitAI: %s", err)
-							}
-						}()
+						go u.updateFileMetadata(f.Name(), task.page)
 					} else {
 						u.dlError("Error during download: %s", err)
 						defer os.Remove(fullpath)

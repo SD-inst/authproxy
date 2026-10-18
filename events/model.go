@@ -15,6 +15,7 @@ const (
 	DOWNLOAD_UPDATE packetType = "download"
 	MESSAGE_UPDATE  packetType = "message"
 	SERVICE_UPDATE  packetType = "service"
+	FILES_UPDATE    packetType = "files"
 )
 
 type Packet struct {
