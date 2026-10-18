@@ -1,4 +1,5 @@
 let sort = JSON.parse(localStorage.getItem('upload_sort') ?? '["name", "asc"]');
+let isAdmin = false;
 
 function getCurrentPath() {
     let currentPath = decodeURI(location.hash);
@@ -53,6 +54,16 @@ function pageIcon(url) {
         return { src: 'images/civitai.png', title: 'CivitAI' };
     }
     return null;
+}
+
+async function checkRole() {
+    try {
+        const result = await fetch('role');
+        if (result.status == 200) {
+            isAdmin = (await result.json()).admin === true;
+        }
+    } catch {}
+    load();
 }
 
 async function load() {
@@ -130,16 +141,48 @@ async function load() {
             const pageIconHtml = icon
                 ? `<a href="${esc(file.page)}" target="_blank" rel="noopener noreferrer" title="Open original page (${icon.title})"><img src="${icon.src}" class="page-icon" /></a>`
                 : '';
+            const renameHtml = isAdmin
+                ? `<span class="rename-slot"><button class="rename-btn" title="Rename" onclick="renameFile('${encodeURIComponent(
+                    file.name
+                ).replace(/'/g, '%27')}')">&#9998;</button></span>`
+                : '';
             row.innerHTML += `<td valign="middle">
             <span class="file-line"><span class="page-slot">${pageIconHtml}</span><a href="download/${encodeURIComponent(
                 currentPath.replace(/\/$/, '')
             )}/${encodeURIComponent(file.name)}.safetensors">
             <span class="filename"><img src="images/file.png" class="icon" /> ${
                 file.name
-            }</span></a></span></td>
+            }</span></a>${renameHtml}</span></td>
             <td>${new Date(file.timestamp).toLocaleString()}</td>`;
         }
     }
+}
+
+async function renameFile(encodedName) {
+    const oldName = decodeURIComponent(encodedName);
+    let newName = prompt('New file name', oldName);
+    if (!newName || newName === oldName) {
+        return;
+    }
+    if (newName.toLowerCase().endsWith('.safetensors')) {
+        newName = newName.slice(0, -'.safetensors'.length);
+    }
+    newName = newName.trim();
+    if (!newName || /[*<>\/\\]/.test(newName)) {
+        alert('Invalid file name');
+        return;
+    }
+    const data = new FormData();
+    data.append('dir', getCurrentPath());
+    data.append('name', oldName);
+    data.append('newname', newName);
+    const result = await fetch('rename', { method: 'POST', body: data });
+    if (result.status != 200) {
+        alertError(result);
+        return;
+    }
+    toast('File renamed', 'success');
+    load();
 }
 
 async function createDir() {

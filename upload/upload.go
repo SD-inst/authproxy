@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/civitai"
 	"github.com/rkfg/authproxy/events"
@@ -30,6 +31,8 @@ import (
 var webroot embed.FS
 
 const civitaiToken = "__Secure-civ-token"
+
+const adminLogin = "admin"
 
 const maxCivitaiDownloadSize = 2 * 1024 * 1024 * 1024 // 2 GB
 
@@ -104,6 +107,73 @@ func validateFilename(fn string) error {
 	if !strings.HasSuffix(fn, ".safetensors") {
 		return fmt.Errorf("only safetensors are supported")
 	}
+	return nil
+}
+
+func (u *uploader) login(c echo.Context) string {
+	token := c.Get("user")
+	if token == nil {
+		return ""
+	}
+	t, ok := token.(*jwt.Token)
+	if !ok || t.Claims == nil {
+		return ""
+	}
+	subject, err := t.Claims.GetSubject()
+	if err != nil {
+		return ""
+	}
+	return subject
+}
+
+func (u *uploader) isAdminUser(c echo.Context) bool {
+	return u.login(c) == adminLogin
+}
+
+func (u *uploader) adminFlag(c echo.Context) error {
+	return JSONOk(c, Result{"admin": u.isAdminUser(c)})
+}
+
+// renameFile renames an uploaded model and its sidecar files (metadata JSON
+// and preview image/video) together. Admins only.
+func (u *uploader) renameFile(c echo.Context) error {
+	if !u.isAdminUser(c) {
+		return JSONErrorMessage(c, 403, "Admin rights required")
+	}
+	dir := c.FormValue("dir")
+	name := c.FormValue("name")
+	newname := c.FormValue("newname")
+	if !validateName(dir) {
+		return JSONErrorMessage(c, 400, "Invalid directory name")
+	}
+	fullpath, err := u.fullPath(dir)
+	if err != nil {
+		return JSONError(c, 400, err)
+	}
+	newname = strings.TrimSuffix(newname, ".safetensors")
+	if name == "" || newname == "" || !filepath.IsLocal(name) || !filepath.IsLocal(newname) || !validateName(name) || !validateName(newname) {
+		return JSONErrorMessage(c, 400, "Invalid file name")
+	}
+	oldbase := filepath.Join(fullpath, name)
+	newbase := filepath.Join(fullpath, newname)
+	if oldbase == newbase {
+		return nil
+	}
+	if _, err := os.Stat(oldbase + ".safetensors"); err != nil {
+		return JSONErrorMessage(c, 404, "File not found")
+	}
+	if _, err := os.Stat(newbase + ".safetensors"); err == nil {
+		return JSONErrorMessage(c, 400, fmt.Sprintf("File %s already exists", newname))
+	}
+	if err := os.Rename(oldbase+".safetensors", newbase+".safetensors"); err != nil {
+		return JSONError(c, 500, err)
+	}
+	for _, ext := range []string{".json", ".preview.png", ".preview.mp4"} {
+		if err := os.Rename(oldbase+ext, newbase+ext); err != nil && !os.IsNotExist(err) {
+			log.Printf("Error renaming %s%s: %s", newname, ext, err)
+		}
+	}
+	u.broker.Broadcast(events.Packet{Type: events.FILES_UPDATE, Ephemeral: true})
 	return nil
 }
 
@@ -540,7 +610,9 @@ func NewUploader(api *echo.Group, rootPath string, cookieFile string, broker *ev
 	api.StaticFS("*", echo.MustSubFS(webroot, "webroot"))
 	api.GET("/files", result.listFiles)
 	api.GET("/stat", result.stat)
+	api.GET("/role", result.adminFlag)
 	api.POST("/files", result.postFiles)
+	api.POST("/rename", result.renameFile)
 	api.POST("/download", result.download)
 	api.GET("/download/:file", result.downloadFile)
 	go result.startDownloader()

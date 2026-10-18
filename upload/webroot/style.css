@@ -16,6 +16,29 @@ body {
     justify-content: center;
 }
 
+.rename-slot {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.4rem;
+}
+
+.rename-btn {
+    appearance: none;
+    border: 1px solid rgba(27, 31, 35, 0.15);
+    border-radius: 6px;
+    background: none;
+    color: inherit;
+    font-size: 0.9rem;
+    line-height: 1;
+    padding: 3px 6px;
+    cursor: pointer;
+}
+
+.rename-btn:hover {
+    background-color: rgba(0, 96, 223, 0.15);
+    border-color: #0060df;
+}
+
 .icon {
     max-width: 2rem;
     vertical-align: middle;
