@@ -163,18 +163,29 @@ func getAPIKey(r *http.Request) string {
 	return key
 }
 
+// forceCORS replaces any Access-Control-Allow-Origin headers with exactly one
+// holding "*". llama.cpp emits a wrong value and may repeat the header several
+// times, and a duplicated header is invalid for browsers (they only honour a
+// single value), so Del-then-Set is required rather than Set alone.
+func forceCORS(h http.Header) {
+	h.Del("Access-Control-Allow-Origin")
+	h.Set("Access-Control-Allow-Origin", "*")
+}
+
 func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 	serveMux := http.NewServeMux()
 
 	serveMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// stubbed locally, mirrors authproxy routes (never proxied to upstream)
 		if isLookupPath(r.URL.Path) {
+			forceCORS(w.Header())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
 		if isToolsPath(r.URL.Path) {
+			forceCORS(w.Header())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"error":{"message":"this feature is disabled","type":"feature_disabled"}}`))
@@ -255,6 +266,7 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 	})
 
 	serveMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		forceCORS(w.Header())
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
@@ -300,6 +312,9 @@ func main() {
 		// the response body so the slot is released when the body closes (grace)
 		// instead of when ServeHTTP returns.
 		ModifyResponse: func(resp *http.Response) error {
+			// Runs before the upstream headers are copied to the client, so this
+			// is where duplicated upstream values are collapsed into one.
+			forceCORS(resp.Header)
 			return sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
 				return isLLMPath(path)
 			}, hardCap, true, graceDelay)(resp.Request, resp)
@@ -315,6 +330,7 @@ func main() {
 				sq.Release(hardCap, graceDelay(r))
 				sq.Unlock()
 			}
+			forceCORS(w.Header())
 			w.WriteHeader(http.StatusBadGateway)
 			fmt.Fprintf(w, "Proxy error: %s\n", err)
 		},
