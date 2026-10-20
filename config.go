@@ -1,7 +1,11 @@
 package main
 
 import (
+	"log"
 	"os"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -25,17 +29,17 @@ type Config struct {
 	// TaskTimeout holds the per-user task time limit (Go duration string, e.g.
 	// "4m"). It overrides TaskTimeoutDefault for the named user. A user not in
 	// the map (or an empty/unparseable value) falls back to TaskTimeoutDefault.
-	TaskTimeout map[string]string `yaml:"task_timeout" description:"Per-user task time limit (Go duration, e.g. '4m'); overrides task_timeout_default"`
-	TaskTimeoutDefault string     `yaml:"task_timeout_default" description:"Default task time limit for users without a specific entry (Go duration, e.g. '10m')"`
+	TaskTimeout        map[string]string `yaml:"task_timeout" description:"Per-user task time limit (Go duration, e.g. '4m'); overrides task_timeout_default"`
+	TaskTimeoutDefault string            `yaml:"task_timeout_default" description:"Default task time limit for users without a specific entry (Go duration, e.g. '10m')"`
 	// TaskMaxLifetime is the safety upper bound on a tracked job: if a job is
 	// still active after this long (lost job_end / container restart) it is
 	// cleared so the timer cannot leak. Default "2h" when unset.
 	TaskMaxLifetime string `yaml:"task_max_lifetime" description:"Safety upper bound on a tracked job before it is cleared (Go duration, default '2h')" `
-	CookieFile   string `yaml:"cookie_file" description:"Path to the cookie storage file"`
-	PushPassword string `yaml:"push_password" description:"Password to push prometheus metrics from other services"`
-	StaticPath   string `yaml:"static_path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
-	ACL          ACL    `yaml:"acl,flow" description:"Mapping of user names to a list or roles or * for full access"`
-	StatusToken  string `yaml:"status_token" description:"Token for /q/status.json endpoint auth"`
+	CookieFile      string `yaml:"cookie_file" description:"Path to the cookie storage file"`
+	PushPassword    string `yaml:"push_password" description:"Password to push prometheus metrics from other services"`
+	StaticPath      string `yaml:"static_path" description:"Path to the static pages (each dir will be available at corresponding /dir URL)"`
+	ACL             ACL    `yaml:"acl,flow" description:"Mapping of user names to a list or roles or * for full access"`
+	StatusToken     string `yaml:"status_token" description:"Token for /q/status.json endpoint auth"`
 	// ProxyAuthSecret is the shared secret Caddy sets in the proxyAuthHeader
 	// on routes already gated by Caddy-side basic auth or a secret URL. A
 	// request carrying it on a service path bypasses the JWT check. The value
@@ -48,7 +52,17 @@ type Config struct {
 	// proxy. A matching request gets its connection severed immediately, with
 	// no HTTP status line or response headers sent.
 	IPBlacklist []string `yaml:"ip_blacklist" description:"Client IPs or CIDR ranges to drop immediately (connection closed, no response)"`
+	// TaskColors maps a hex color to the users whose tasks render the status
+	// page (/q) progress bar as an animated gradient in that color. A color
+	// may cover several users; a user listed under several colors keeps the
+	// alphabetically first one. Users without an entry (and anonymous tasks)
+	// get the default solid blue.
+	TaskColors map[string][]string `yaml:"task_colors" description:"Status page progress bar colors: hex color (#rgb/#rrggbb) -> list of usernames"`
 }
+
+// userColors is the inverted TaskColors map (username -> color), rebuilt by
+// loadConfig. Kept lowercase-keyed because credential usernames are.
+var userColors = map[string]string{}
 
 var config = Config{
 	Address:     "0.0.0.0:8000",
@@ -64,7 +78,54 @@ func loadConfig(filename string) error {
 		return err
 	}
 	defer f.Close()
-	return yaml.NewDecoder(f).Decode(&config)
+	if err := yaml.NewDecoder(f).Decode(&config); err != nil {
+		return err
+	}
+	config.buildUserColors()
+	return nil
+}
+
+// cssHexColorRE accepts the short and long CSS hex color forms. Only these are
+// allowed so the value can be embedded into page CSS without escaping.
+var cssHexColorRE = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
+
+// buildUserColors inverts TaskColors (color -> users) into userColors
+// (username -> color). Invalid colors are skipped with a log line. Colors are
+// walked in sorted order so a user listed under several colors deterministically
+// keeps the alphabetically first one.
+func (c *Config) buildUserColors() {
+	userColors = map[string]string{}
+	colors := make([]string, 0, len(c.TaskColors))
+	for color := range c.TaskColors {
+		colors = append(colors, color)
+	}
+	sort.Strings(colors)
+	for _, color := range colors {
+		if !cssHexColorRE.MatchString(color) {
+			log.Printf("task_colors: ignoring invalid color %q (use #rgb or #rrggbb)", color)
+			continue
+		}
+		for _, user := range c.TaskColors[color] {
+			user = strings.ToLower(strings.TrimSpace(user))
+			if user == "" {
+				continue
+			}
+			if _, dup := userColors[user]; dup {
+				log.Printf("task_colors: user %q listed under several colors, keeping %s", user, userColors[user])
+				continue
+			}
+			userColors[user] = color
+		}
+	}
+}
+
+// taskColor returns the status-page progress bar color configured for a
+// username ("" = the default blue). Unauthenticated owners get the default.
+func taskColor(username string) string {
+	if username == "" || username == UNAUTH_OWNER {
+		return ""
+	}
+	return userColors[strings.ToLower(username)]
 }
 
 // taskLimit returns the per-user task time limit. Unauthenticated owners (an

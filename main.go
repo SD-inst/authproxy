@@ -1,7 +1,6 @@
 package main
 
 import (
-	"slices"
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
@@ -11,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,7 +48,6 @@ var domains = map[string]echo.MiddlewareFunc{
 	"":               sdProxy,
 	"acestep.":       proxy.NewProxyWrapperStr(AS10_URL, nil),
 	"as15.":          proxy.NewProxyWrapperStr(AS15_URL, nil),
-	"ovi.":           proxy.NewProxyWrapperStr(OVI_URL, nil),
 	"cui.":           proxy.NewProxyWrapperStr(CUI_URL, nil),
 	"vlo.":           proxy.NewProxyWrapperStr(VLO_URL, nil),
 	"/vote2025hw":    proxy.NewProxyWrapperStr(SDVOTE_URL, nil),
@@ -57,7 +56,7 @@ var domains = map[string]echo.MiddlewareFunc{
 
 var skipAuth = map[string][]string{
 	"path": {
-		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/internal/job_start", "/internal/job_end", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep15/join", "/acestep15/leave", "/ovi/join", "/ovi/leave", "/q/status.json",
+		"/login", "/metrics", "/internal/join", "/internal/leave", "/internal/free_complete", "/internal/job_start", "/internal/job_end", "/cui/join", "/cui/leave", "/cui/progress", "/acestep/join", "/acestep/leave", "/acestep15/join", "/acestep15/leave", "/q/status.json",
 	},
 	"prefix": {
 		"/v1/", "/sdapi/",
@@ -172,8 +171,8 @@ func main() {
 		Skipper: func(c echo.Context) bool {
 			path := c.Path()
 			if slices.Contains(skipAuth["path"], path) {
-					return true
-				}
+				return true
+			}
 			for _, p := range skipAuth["prefix"] {
 				if strings.HasPrefix(path, p) {
 					return true
@@ -233,6 +232,9 @@ func main() {
 	}
 	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)
+	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken, sq)
+	pr.AddHandlers(e)
+	pr.Start(sq)
 	e.POST("/internal/free_complete", func(c echo.Context) error {
 		sq.SetCleanupProgress(true)
 		return nil
@@ -251,6 +253,14 @@ func main() {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "task_id required"})
 		}
 		jt.Start(p.Service, p.TaskID, p.Owner)
+		// Color the status page bar by the task owner's configured color
+		// (UNAUTH_OWNER = anonymous, default color). The username itself
+		// never reaches the page.
+		owner := p.Owner
+		if owner == UNAUTH_OWNER {
+			owner = ""
+		}
+		pr.SetTaskColor(taskColor(owner))
 		return nil
 	})
 	e.POST("/internal/job_end", func(c echo.Context) error {
@@ -264,9 +274,6 @@ func main() {
 		jt.End(p.TaskID)
 		return nil
 	})
-	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken, sq)
-	pr.AddHandlers(e)
-	pr.Start(sq)
 	llmurl, err := url.Parse(LLM_URL)
 	if err != nil {
 		log.Fatal(err)
@@ -316,9 +323,8 @@ func main() {
 		}
 	}
 	e.Group("/sdapi", m.ensureService("stablediff-cuda"), sdProxy)
-	addSDQueueHandlers(e, sq)
-	addASQueueHandlers(e, sq)
-	addOviQueueHandlers(e, sq)
+	addSDQueueHandlers(e, sq, pr)
+	addASQueueHandlers(e, sq, pr)
 	if llmurl.Scheme != "" {
 		llm := NewLLMBalancer(llmurl, sq, mchan)
 		e.POST("/upstream/:model/v1/streams/lookup", llm.lookup)

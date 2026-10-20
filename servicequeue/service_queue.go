@@ -18,7 +18,6 @@ const (
 	TTS
 	CUI
 	ACESTEP
-	OVI
 	ACESTEP15
 	WAIT   = 500
 	IGNORE = 999
@@ -38,8 +37,6 @@ func (s SvcType) String() string {
 		return "CUI"
 	case ACESTEP:
 		return "ACESTEP"
-	case OVI:
-		return "OVI"
 	case ACESTEP15:
 		return "ACESTEP1.5"
 	case WAIT:
@@ -63,18 +60,18 @@ type SvcUpdate struct {
 
 type ServiceQueue struct {
 	sync.Mutex
-	cv                *sync.Cond
-	cleanupTimer      *time.Timer
-	cleanupID         int
-	service           SvcType
-	prevService       SvcType
-	waitedService     SvcType
+	cv            *sync.Cond
+	cleanupTimer  *time.Timer
+	cleanupID     int
+	service       SvcType
+	prevService   SvcType
+	waitedService SvcType
 	// holdCount is the number of in-flight requests currently holding the slot
 	// (acquired, or re-entered under the same holder). A request calls Hold at
 	// acquisition and Release at body-close/error; the slot is only freed when
 	// the last holder leaves. Caller must hold the lock.
-	holdCount int
-	CF          *CleanupFunc // executes after await if service changed
+	holdCount         int
+	CF                *CleanupFunc // executes after await if service changed
 	svcChan           chan<- SvcUpdate
 	waitqueue         atomic.Int32
 	cleanupCV         *sync.Cond

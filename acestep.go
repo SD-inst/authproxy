@@ -5,16 +5,19 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/servicequeue"
 )
 
-func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
+func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, pr progress.TaskColorSetter) {
 	e.POST("/acestep/join", func(c echo.Context) error {
+		user := authUser(c) // the service page sends the sdkey cookie
 		sq.Lock()
 		sq.AwaitReent(servicequeue.ACESTEP)
 		sq.SetService(servicequeue.ACESTEP, "working")
 		sq.Unlock()
 		sq.SetCleanup(time.Minute)
+		pr.SetTaskColor(taskColor(user))
 		return nil
 	})
 	e.POST("/acestep/leave", func(c echo.Context) error {
@@ -26,6 +29,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 	})
 	cleanupClient := http.Client{Timeout: time.Second * 10}
 	e.POST("/acestep15/join", func(c echo.Context) error {
+		user := authUser(c)
 		sq.Lock()
 		sq.AwaitReent(servicequeue.ACESTEP15)
 		sq.SetService(servicequeue.ACESTEP15, "working")
@@ -37,6 +41,7 @@ func addASQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue) {
 		}
 		sq.Unlock()
 		sq.SetCleanup(3 * time.Minute)
+		pr.SetTaskColor(taskColor(user))
 		return nil
 	})
 	e.POST("/acestep15/leave", func(c echo.Context) error {

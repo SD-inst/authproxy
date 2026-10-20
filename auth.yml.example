@@ -1,0 +1,48 @@
+accounts: "users.txt"
+domain: "example.org"
+address: "0.0.0.0:8000"
+lora_uploads: "/uploads"
+push_password: "change-me"
+static_path: "static"
+cookie_file: "cookie.txt"
+sd_timeout: 1800
+# Per-user task time limit. A job is aborted (soft interrupt) once its wall-clock
+# duration exceeds the limit. Users without an entry use task_timeout_default.
+# Keep each limit below sd_timeout so the soft abort fires before the hard
+# container restart. Empty/absent = no per-user limit (only sd_timeout applies).
+task_timeout:
+    alice: "4m"
+    bob: "8m"
+task_timeout_default: "10m"
+task_max_lifetime: "2h"
+# Progress bar colors for the /q status page: hex color -> users who queued the
+# task (a color may cover several users). The bar gets an animated gradient in
+# that color while the user's task runs. Users without an entry (and anonymous
+# tasks) keep the default solid blue.
+# task_colors:
+#     "#ff7a1a": ["alice", "bob"]
+#     "#a855f7": ["carol"]
+# ip_blacklist: client IPs / CIDR ranges to drop at the connection level.
+# The IP is read from the proxy headers (X-Forwarded-For / X-Real-IP). A
+# matching request has its connection closed with no response sent.
+# ip_blacklist:
+#   - "203.0.113.7"        # single IP
+#   - "198.51.100.0/24"    # CIDR range
+acl:
+    admin: ["*"]
+    alice:
+        - a1111
+        - status
+        - comfyui
+        - cozyui
+        - "-tts"
+        - "-llm"
+    carol:
+        - acestep
+        - status
+        - acestep15
+    guest:
+        - llm
+        - acestep
+        - acestep15
+        - status

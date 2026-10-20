@@ -7,7 +7,6 @@ const (
 	CUI_URL    = "http://comfyui:8188"
 	AS10_URL   = "http://acestep:7865"
 	AS15_URL   = "http://acestep15:7860"
-	OVI_URL    = "http://ovi:7860"
 	SDVOTE_URL = "http://sdvote:8000"
 	CADDY_URL  = "http://caddy:7861"
 	VLO_URL    = "http://vlo:6332"

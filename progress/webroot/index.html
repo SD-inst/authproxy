@@ -33,8 +33,6 @@
                     case 5:
                         return 'ACESTEP';
                     case 6:
-                        return 'OVI';
-                    case 7:
                         return 'ACESTEP1.5';
                     case 500:
                         if (ws !== undefined && ws !== 500) {
@@ -103,6 +101,14 @@
                             document.getElementById('last_active').innerText =
                                 lastActive.toLocaleString();
                             document.getElementById('duration').innerText = data.duration;
+                            const bar = document.getElementById('progress');
+                            if (data.color) {
+                                bar.style.setProperty('--pc', data.color);
+                                bar.parentElement.classList.add('user-color');
+                            } else {
+                                bar.style.removeProperty('--pc');
+                                bar.parentElement.classList.remove('user-color');
+                            }
                             progress.progress = data.progress;
                             progress.eta = data.eta;
                             updateTitle();

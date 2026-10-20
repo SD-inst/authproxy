@@ -30,6 +30,40 @@
     background-color: #0060df;
 }
 
+/* Task attributed to a user with a configured color: the bar fills with that
+   color (--pc, set from the server-provided config color) and a lighter band
+   flows through it. The band tile is exactly 600px and the animation shifts
+   the background by one tile, so the loop is seamless. */
+.animated-progress.user-color span {
+    background-color: var(--pc, #0060df);
+    background-image: linear-gradient(
+        100deg,
+        var(--pc, #0060df) 0%,
+        var(--pc, #0060df) 6%,
+        color-mix(in srgb, var(--pc, #0060df) 40%, #ffffff) 15%,
+        var(--pc, #0060df) 24%,
+        var(--pc, #0060df) 100%
+    );
+    background-size: 600px 100%;
+    animation: progress-sheen 2.4s linear infinite;
+}
+
+@keyframes progress-sheen {
+    from {
+        background-position: 0 0;
+    }
+    to {
+        background-position: 600px 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .animated-progress.user-color span {
+        animation: none;
+        background-size: 100% 100%;
+    }
+}
+
 @media (prefers-color-scheme: dark) {
     body {
         background: #0b0f19;

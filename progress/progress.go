@@ -32,6 +32,10 @@ type ProgressUpdate struct {
 	Description  string    `json:"description"`
 	LastActive   time.Time `json:"last_active"`
 	TaskDuration string    `json:"duration"`
+	// Color is the display color configured for the user that queued the
+	// current task ("" = the page default). The username itself stays
+	// server-side; the color is what makes a non-default user visible.
+	Color string `json:"color"`
 }
 
 type GPUUpdate struct {
@@ -56,9 +60,20 @@ type sdprogress struct {
 	State       sdprogressState
 }
 
-// CUIReseter lets callers (the /cui/join handler) reset the CUI progress
-// state at task start without depending on the unexported progress type.
-type CUIReseter interface {
+// TaskColorSetter lets callers (the queue join and job_start handlers) apply
+// the display color of the user who queued the current task, so the status
+// page can color its progress bar ("" = the default). The username itself is
+// resolved server-side and never sent to the page.
+type TaskColorSetter interface {
+	SetTaskColor(color string)
+}
+
+// QueueControls is the control surface the service queue join handlers use:
+// setting the current task's color and resetting the CUI progress state at
+// task start (ComfyUI does not send a zero-progress on task start). Passing
+// this instead of the unexported progress type keeps the handlers decoupled.
+type QueueControls interface {
+	TaskColorSetter
 	ResetCUI()
 }
 
@@ -75,10 +90,22 @@ type progress struct {
 	resetCUI      chan struct{}
 	resetProgress chan struct{}
 	startJob      chan struct{}
+	colorChan     chan string
 }
 
 func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog.Watchdog, m chan<- metrics.MetricUpdate, svcChan <-chan servicequeue.SvcUpdate, statusToken string, sq *servicequeue.ServiceQueue) *progress {
-	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq, resetCUI: make(chan struct{}, 1), resetProgress: make(chan struct{}, 1), startJob: make(chan struct{}, 1)}
+	return &progress{b: broker, sdhost: sdhost, timeout: time.Second * time.Duration(timeout), wd: wd, m: m, svcChan: svcChan, pchan: make(chan sdprogress, 100), statusToken: statusToken, sq: sq, resetCUI: make(chan struct{}, 1), resetProgress: make(chan struct{}, 1), startJob: make(chan struct{}, 1), colorChan: make(chan string, 1)}
+}
+
+// SetTaskColor applies the display color of the user who queued the task
+// currently holding the service slot ("" = the page default). The color is
+// applied asynchronously by the updater and broadcast with the next progress
+// packet. Non-blocking: the latest call wins under a race.
+func (p *progress) SetTaskColor(color string) {
+	select {
+	case p.colorChan <- color:
+	default:
+	}
 }
 
 // ResetCUI resets the CUI progress state and all ETA timers at task start
@@ -115,6 +142,10 @@ func (p *progress) updater() {
 	lastJobCount := 0
 	lastQueue := 0
 	lastProg := float64(0)
+	// curColor is the display color of the user holding the slot (set via
+	// SetTaskColor from the join/job_start handlers). Cleared when the slot
+	// is freed. The username itself is never broadcast.
+	curColor := ""
 	// jobActive is true while a job is running (service not NONE). It gates the
 	// ticker: after the service drops to NONE (resetProgress) it is cleared so
 	// the frozen duration/last_active no longer tick. It also marks a finished
@@ -230,11 +261,15 @@ func (p *progress) updater() {
 				Description:  desc,
 				LastActive:   now,
 				TaskDuration: dur,
+				Color:        curColor,
 			}})
 	}
 
 	for {
 		select {
+		case c := <-p.colorChan:
+			curColor = c
+			broadcast("")
 		case <-p.resetCUI:
 			// Task start: ComfyUI does not send zero-progress here, so clear
 			// the previous task's state and all ETA baselines (the progress
@@ -273,6 +308,7 @@ func (p *progress) updater() {
 			lastProgTs = time.Time{}
 			jobStart = time.Time{}
 			jobActive = false
+			curColor = ""
 			broadcast("")
 		case <-p.startJob:
 			// Service transitioned from NONE/WAIT to an active service:
@@ -517,6 +553,7 @@ type statusJSON struct {
 	PrevService     string  `json:"prev_service"`
 	PrevWaitService string  `json:"prev_wait_service"`
 	ETA             string  `json:"eta"`
+	Color           string  `json:"color"`
 }
 
 func (p *progress) handleStatusJSON(c echo.Context) error {
@@ -531,16 +568,18 @@ func (p *progress) handleStatusJSON(c echo.Context) error {
 	var progProgress float64
 	var progQueued int
 	var progETA string
+	var progColor string
 
 	progResp := p.b.State(events.PROGRESS_UPDATE)
 	if progResp != nil {
 		if pkt, ok := progResp.(events.Packet); ok {
-		if pu, ok := pkt.Data.(ProgressUpdate); ok {
-			progProgress = pu.Progress
-			progQueued = pu.Queued
-			progETA = pu.ETA
-			description = pu.Description
-		}
+			if pu, ok := pkt.Data.(ProgressUpdate); ok {
+				progProgress = pu.Progress
+				progQueued = pu.Queued
+				progETA = pu.ETA
+				description = pu.Description
+				progColor = pu.Color
+			}
 		}
 	}
 
@@ -584,6 +623,7 @@ func (p *progress) handleStatusJSON(c echo.Context) error {
 		PrevService:     prevSvcName,
 		PrevWaitService: prevWaitSvcName,
 		ETA:             progETA,
+		Color:           progColor,
 	})
 }
 

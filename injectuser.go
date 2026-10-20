@@ -9,6 +9,28 @@ import (
 // attribute a task to the authenticated user (per-user task time limit).
 const headerAuthproxyUser = "X-Authproxy-User"
 
+// authUser returns the username from the sdkey JWT cookie, or "" when the
+// cookie is missing or invalid. It backs both the proxy header injection and
+// the queue join handlers (which are skipAuth, so the JWT middleware leaves
+// no user on the context, but the browser still sends the cookie).
+func authUser(c echo.Context) string {
+	cookie, err := c.Cookie(cookieName)
+	if err != nil || cookie.Value == "" {
+		return ""
+	}
+	token, err := jwt.Parse(cookie.Value, func(t *jwt.Token) (interface{}, error) {
+		return []byte(params.JWTSecret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+	if err != nil || token == nil || !token.Valid {
+		return ""
+	}
+	subject, err := token.Claims.GetSubject()
+	if err != nil {
+		return ""
+	}
+	return subject
+}
+
 // injectUser reads the sdkey JWT cookie and, if it is valid, stamps the
 // authenticated username into the X-Authproxy-User header on the outgoing proxy
 // request. A missing or invalid cookie leaves the request untouched, so the
@@ -16,19 +38,7 @@ const headerAuthproxyUser = "X-Authproxy-User"
 // hook on every SD_URL/ComfyUI proxy, so it works for both authenticated routes
 // and the skipAuth /sdapi API route (where the browser still sends the cookie).
 func injectUser(c echo.Context) {
-	cookie, err := c.Cookie(cookieName)
-	if err != nil || cookie.Value == "" {
-		return
+	if subject := authUser(c); subject != "" {
+		c.Request().Header.Set(headerAuthproxyUser, subject)
 	}
-	token, err := jwt.Parse(cookie.Value, func(t *jwt.Token) (interface{}, error) {
-		return []byte(params.JWTSecret), nil
-	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
-	if err != nil || token == nil || !token.Valid {
-		return
-	}
-	subject, err := token.Claims.GetSubject()
-	if err != nil || subject == "" {
-		return
-	}
-	c.Request().Header.Set(headerAuthproxyUser, subject)
 }

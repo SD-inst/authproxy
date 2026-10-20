@@ -21,8 +21,9 @@ func newCUIProxy(cuiurl *url.URL) echo.MiddlewareFunc {
 	return proxy.NewProxyWrapper(cuiurl, &proxy.Interceptor{Before: injectUser})
 }
 
-func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL, pr progress.CUIReseter) {
+func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL, qc progress.QueueControls) {
 	e.POST("/cui/join", func(c echo.Context) error {
+		user := authUser(c) // the ComfyUI page sends the sdkey cookie
 		sq.Lock()
 		defer sq.Unlock()
 		sq.AwaitReent(servicequeue.CUI)
@@ -34,10 +35,11 @@ func addCUIHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, cuiurl *url.URL
 			},
 			Service: servicequeue.CUI}
 		sq.SetService(servicequeue.CUI, "preparing...")
+		qc.SetTaskColor(taskColor(user))
 		// ComfyUI does not send a zero-progress on task start, so reset the
 		// previous task's progress and ETA baselines here (otherwise the
 		// progress lingers at 100% until the next sampler's first step).
-		pr.ResetCUI()
+		qc.ResetCUI()
 		return nil
 	})
 	e.POST("/cui/leave", func(c echo.Context) error {

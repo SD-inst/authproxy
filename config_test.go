@@ -39,3 +39,49 @@ func TestTaskLimit(t *testing.T) {
 		t.Fatalf("expected no limit for unparseable value")
 	}
 }
+
+func TestTaskColor(t *testing.T) {
+	oldColors := config.TaskColors
+	defer func() {
+		config.TaskColors = oldColors
+		config.buildUserColors()
+	}()
+
+	config.TaskColors = map[string][]string{
+		"#a855f7": {"carol", "User2"},
+		"#ff7a1a": {"alice", "bob"},
+		"#12345":  {" alice "},
+		"#00ff00": {"alice", "spaced "},
+		"red":     {"whoever"}, // invalid color form
+	}
+	config.buildUserColors()
+
+	// A user listed under several colors keeps the alphabetically first one.
+	if got := taskColor("alice"); got != "#00ff00" {
+		t.Fatalf("expected alice -> #00ff00, got %q", got)
+	}
+	if got := taskColor("BOB"); got != "#ff7a1a" {
+		t.Fatalf("expected case-insensitive lookup, got %q", got)
+	}
+	if got := taskColor("user2"); got != "#a855f7" {
+		t.Fatalf("expected user2 -> #a855f7, got %q", got)
+	}
+	// Usernames are trimmed on both sides.
+	if got := taskColor("spaced"); got != "#00ff00" {
+		t.Fatalf("expected trimmed user to keep its color, got %q", got)
+	}
+	// Invalid color form: the user gets no color.
+	if got := taskColor("whoever"); got != "" {
+		t.Fatalf("expected no color for an invalid color entry, got %q", got)
+	}
+	// Unknown and unauthenticated users get the default (no color).
+	if got := taskColor("nobody"); got != "" {
+		t.Fatalf("expected no color for unknown user, got %q", got)
+	}
+	if got := taskColor(UNAUTH_OWNER); got != "" {
+		t.Fatalf("expected no color for the unauthenticated owner, got %q", got)
+	}
+	if got := taskColor(""); got != "" {
+		t.Fatalf("expected no color for an empty owner, got %q", got)
+	}
+}
