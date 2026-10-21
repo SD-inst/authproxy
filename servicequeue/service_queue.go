@@ -301,6 +301,28 @@ func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(p
 	}
 }
 
+// ServiceCloserWithRelease is the response-time half of an acquisition the
+// caller has already made: it normalizes the slot state when the upstream
+// responds and installs the caller's release func on the response body. The
+// release is supplied by the caller instead of being an internal Release, so
+// that the caller can make it idempotent — the body-close hook and a proxy
+// error handler can both fire for one request, and each holder must free the
+// slot at most once. resp must be non-nil (a response was received).
+func (sq *ServiceQueue) ServiceCloserWithRelease(t SvcType, timeout time.Duration, release func()) func(req *http.Request, resp *http.Response) error {
+	return func(req *http.Request, resp *http.Response) error {
+		sq.Lock()
+		sq.AwaitReent(t)
+		log.Printf("*** Closer wait for %s is over ***", req.URL.Path)
+		resp.Body = BodyWrapper{ReadCloser: resp.Body, onClose: func() {
+			log.Printf("*** Closing body ***")
+			release()
+		}}
+		sq.SetCleanup(timeout)
+		sq.Unlock()
+		return nil
+	}
+}
+
 func (sq *ServiceQueue) SetCleanupProgress(done bool) {
 	sq.cleanupM.Lock()
 	defer sq.cleanupM.Unlock()

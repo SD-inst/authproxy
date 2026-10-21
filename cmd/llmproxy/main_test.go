@@ -47,17 +47,19 @@ func newTestProxy(upstream *url.URL) *httptest.Server {
 			req.URL.Host = upstream.Host
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			return sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
-				return isLLMPath(path)
-			}, hardCap, true, graceDelay)(resp.Request, resp)
+			rel := releaserFor(resp.Request)
+			if rel == nil {
+				return nil
+			}
+			return sq.ServiceCloserWithRelease(servicequeue.LLM, hardCap, func() {
+				rel.release(resp.Request)
+			})(resp.Request, resp)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			// Mirror the real proxy: a canceled/failed request releases its
-			// holder via the reference count.
-			if r.Method == "POST" && isLLMPath(r.URL.Path) {
-				sq.Lock()
-				sq.Release(hardCap, graceDelay(r))
-				sq.Unlock()
+			// Mirror the real proxy: a canceled/failed request frees its own
+			// holder through the request context, whatever its method.
+			if rel := releaserFor(r); rel != nil {
+				rel.release(r)
 			}
 			w.WriteHeader(http.StatusBadGateway)
 			fmt.Fprintf(w, "Proxy error: %s\n", err)
@@ -237,6 +239,8 @@ func TestReleaseAfterLastRequest(t *testing.T) {
 
 // A request without a "model" field (same key) cannot switch the loaded model,
 // so it must re-enter the queue instead of waiting for the held model to release.
+// It must also leave the held model recorded, otherwise the next request with a
+// different model sees "no model held" and barges into a generation in flight.
 func TestNoModelRequestReenters(t *testing.T) {
 	const sleep = 400 * time.Millisecond
 	const grace = 300 * time.Millisecond
@@ -261,8 +265,11 @@ func TestNoModelRequestReenters(t *testing.T) {
 	wg.Add(2)
 
 	// A1 holds the model "llama"; A2 (same key, no model) must re-enter immediately.
+	// A2 is started only after A1 has acquired, so the test exercises re-entry
+	// into a held model rather than racing over who acquires first.
 	go func() {
 		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
 		a2s, a2e, _ = doRequest(t, proxy.URL, "/v1/chat/completions", "", "keyA")
 	}()
 	go func() {
@@ -625,4 +632,132 @@ func TestVipSameKeyReenters(t *testing.T) {
 	}
 	_ = v1s
 	_ = v1e
+}
+
+// A CORS preflight is a browser handshake, not a model request, so it must be
+// answered immediately. If it entered the queue it could only proceed when the
+// service reaches NONE — which never happens while other requests keep the slot
+// — and the browser's real request behind the preflight would hang with it.
+func TestOptionsPreflightBypassesQueue(t *testing.T) {
+	const sleep = 400 * time.Millisecond
+
+	upstream := newFakeUpstream(t, sleep)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	// Hold the slot with a request that stays in flight.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "keyA")
+	}()
+	time.Sleep(100 * time.Millisecond) // let the holder acquire the slot
+
+	for _, path := range []string{
+		"/v1/chat/completions",
+		"/upstream/llama/v1/chat/completions",
+		"/v1/models",
+	} {
+		req, err := http.NewRequest(http.MethodOptions, proxy.URL+path, nil)
+		if err != nil {
+			t.Fatalf("building preflight: %v", err)
+		}
+		req.Header.Set("Origin", "https://example.org")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+
+		start := time.Now()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("preflight %s failed: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		elapsed := time.Since(start)
+
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("preflight %s status = %d, want 204", path, resp.StatusCode)
+		}
+		if len(body) != 0 {
+			t.Errorf("preflight %s body = %q, want empty", path, body)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("preflight %s ACAO = %q, want *", path, got)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Headers"); got != "authorization,content-type" {
+			t.Errorf("preflight %s Allow-Headers = %q, want the requested headers", path, got)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Methods"); !strings.Contains(got, "POST") {
+			t.Errorf("preflight %s Allow-Methods = %q, want it to include POST", path, got)
+		}
+		if elapsed > 150*time.Millisecond {
+			t.Errorf("preflight %s was queued behind the holder: %v", path, elapsed)
+		}
+	}
+	wg.Wait()
+}
+
+// A non-POST request takes a slot holder exactly like a POST does, so abandoning
+// one (an SSE-resume GET, a closed browser tab) must free that holder when the
+// proxy fails the request. A holder left behind keeps the slot occupied and the
+// next request is only let through by the hard cap.
+func TestCanceledGetReleasesSlot(t *testing.T) {
+	const grace = 150 * time.Millisecond
+	const holdCap = 30 * time.Second // the hard cap must not be what frees the slot
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			<-r.Context().Done() // a stream the client abandons
+			return
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	oldGrace, oldCap := gracePeriod, hardCap
+	gracePeriod, hardCap = grace, holdCap
+	defer func() { gracePeriod, hardCap = oldGrace, oldCap }()
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	// 1. make the proxy hold a named model, so a request for another model later
+	//    has to wait for the slot to be freed rather than re-enter it.
+	if _, _, err := doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "keyA"); err != nil {
+		t.Fatalf("POST holding the model: %v", err)
+	}
+	time.Sleep(grace + 100*time.Millisecond)
+
+	// 2. a GET on an LLM path that the client abandons.
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxy.URL+"/upstream/llama/v1/chat/completions", nil)
+	if err != nil {
+		t.Fatalf("building GET: %v", err)
+	}
+	req.Header.Set("Authorization", "keyA")
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+	time.Sleep(150 * time.Millisecond) // let it acquire the slot and reach the upstream
+	cancel()
+	time.Sleep(200 * time.Millisecond) // let the proxy error handler run
+
+	// 3. another model must be let through after the grace period, not after the
+	//    hold cap.
+	start := time.Now()
+	if _, _, err := doRequest(t, proxy.URL, "/v1/chat/completions", "mistral", "keyB"); err != nil {
+		t.Fatalf("POST after the canceled GET: %v", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("the canceled GET did not free its holder: the next request waited %v (grace %v, hold cap %v)", took, grace, holdCap)
+	}
 }

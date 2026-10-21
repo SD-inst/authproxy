@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -85,13 +87,44 @@ func isVIPKey(key string) bool {
 // llmProxy holds the shared state. apiKey/model are guarded by the ServiceQueue
 // mutex (they are only touched while sq is locked).
 type llmProxy struct {
-	sq          *servicequeue.ServiceQueue
-	target      *url.URL
-	client      http.Client
-	apiKey      string
-	model       string
-	heldSince   time.Time
-	heldRequest int
+	sq     *servicequeue.ServiceQueue
+	target *url.URL
+	client http.Client
+	apiKey string
+	model  string
+}
+
+// releaseKey carries the slot releaser of the request that acquired the slot
+// through the request context, so that both release sites — the response-body
+// close hook and the proxy error handler — act on the holder of their own
+// request instead of guessing it from the method.
+type releaseKey struct{}
+
+// slotRelease pairs with the Hold() taken when the request acquired the slot.
+// It is idempotent: the body-close hook and the error handler can both fire for
+// one request, and the slot must be freed at most once per holder.
+type slotRelease struct {
+	sq   *servicequeue.ServiceQueue
+	once sync.Once
+}
+
+func (s *slotRelease) release(r *http.Request) {
+	s.once.Do(func() {
+		s.sq.Lock()
+		defer s.sq.Unlock()
+		s.sq.Release(hardCap, graceDelay(r))
+	})
+}
+
+// releaserFor returns the releaser attached to a proxied request, or nil when
+// the request never entered the queue (not an LLM path, or a locally stubbed
+// route) and therefore has no slot to free.
+func releaserFor(r *http.Request) *slotRelease {
+	if r == nil {
+		return nil
+	}
+	rel, _ := r.Context().Value(releaseKey{}).(*slotRelease)
+	return rel
 }
 
 func isLLMPath(path string) bool {
@@ -176,7 +209,26 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 	serveMux := http.NewServeMux()
 
 	serveMux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// stubbed locally, mirrors authproxy routes (never proxied to upstream)
+		// A CORS preflight is a browser handshake, not a model request, so it
+		// must never enter the queue: while the slot is busy the browser sits on
+		// a preflight that cannot complete until the slot is freed, and the real
+		// request behind it hangs with it. Answered for every path, because the
+		// upstream's own preflight answer lacks the CORS headers anyway.
+		if r.Method == http.MethodOptions {
+			forceCORS(w.Header())
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			if reqHeaders := r.Header.Get("Access-Control-Request-Headers"); reqHeaders != "" {
+				w.Header().Set("Access-Control-Allow-Headers", reqHeaders)
+			} else {
+				w.Header().Set("Access-Control-Allow-Headers", "*")
+			}
+			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		// lookup and tools are stubbed locally, mirroring authproxy routes
+		// (never proxied to upstream)
 		if isLookupPath(r.URL.Path) {
 			forceCORS(w.Header())
 			w.Header().Set("Content-Type", "application/json")
@@ -198,8 +250,8 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		}
 
 		// Acquire the slot (mirrors llm.go's Before interceptor). The slot is
-		// released by the ModifyResponse hook (body close -> grace) or the hard
-		// cap, not by ServeHTTP returning.
+		// released by the ModifyResponse hook (body close -> grace) or by the
+		// proxy error handler, not by ServeHTTP returning.
 		sq := lp.sq
 		sq.Lock()
 		var model string
@@ -235,12 +287,13 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 				return canReent
 			}, model)
 			lp.apiKey = apiKey
-			lp.heldRequest++
-			if lp.model != model {
-				// Model switched (or first holder): start a fresh hold epoch.
-				lp.heldSince = time.Now()
+			// A request that names no model cannot change which model is held, so
+			// it must not overwrite the held model with "": an empty held model
+			// makes the re-entry predicate match every other model, letting an
+			// unrelated request interrupt a generation already in flight.
+			if model != "" {
+				lp.model = model
 			}
-			lp.model = model
 		} else {
 			sq.Await(servicequeue.LLM, false)
 		}
@@ -258,6 +311,11 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		// responding, ModifyResponse never runs and this is the only timer that
 		// will free the slot, so a wedged connection no longer blocks everyone.
 		sq.SetCleanup(hardCap)
+		// Bind the release to this request: the same holder is freed whichever
+		// of the two paths runs — the response body closing, or a proxy error
+		// before/without a response — and it is freed exactly once.
+		rel := &slotRelease{sq: sq}
+		r = r.WithContext(context.WithValue(r.Context(), releaseKey{}, rel))
 		sq.Unlock()
 
 		log.Printf("Serving: model=%s", model)
@@ -315,20 +373,24 @@ func main() {
 			// Runs before the upstream headers are copied to the client, so this
 			// is where duplicated upstream values are collapsed into one.
 			forceCORS(resp.Header)
-			return sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
-				return isLLMPath(path)
-			}, hardCap, true, graceDelay)(resp.Request, resp)
+			rel := releaserFor(resp.Request)
+			if rel == nil {
+				// A request that never entered the queue has no slot to keep or
+				// to free (this covers every non-LLM path).
+				return nil
+			}
+			return sq.ServiceCloserWithRelease(servicequeue.LLM, hardCap, func() {
+				rel.release(resp.Request)
+			})(resp.Request, resp)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Proxy error: %s", err)
 			// The request failed without (or before) a response, so the
-			// ModifyResponse body-close release never runs. Release the holder via
-			// the reference count (same path as the body-close), so a failed request
-			// only frees the slot when it is the last holder.
-			if r.Method == "POST" && isLLMPath(r.URL.Path) {
-				sq.Lock()
-				sq.Release(hardCap, graceDelay(r))
-				sq.Unlock()
+			// body-close release never runs. Free the holder of this very
+			// request, whatever its method: Hold is taken for every method that
+			// enters the queue, so the release must not be method-dependent.
+			if rel := releaserFor(r); rel != nil {
+				rel.release(r)
 			}
 			forceCORS(w.Header())
 			w.WriteHeader(http.StatusBadGateway)
