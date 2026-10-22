@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -41,31 +41,9 @@ func newTestProxy(upstream *url.URL) *httptest.Server {
 		target: upstream,
 		client: http.Client{},
 	}
-	rp := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = upstream.Scheme
-			req.URL.Host = upstream.Host
-		},
-		ModifyResponse: func(resp *http.Response) error {
-			rel := releaserFor(resp.Request)
-			if rel == nil {
-				return nil
-			}
-			return sq.ServiceCloserWithRelease(servicequeue.LLM, hardCap, func() {
-				rel.release(resp.Request)
-			})(resp.Request, resp)
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			// Mirror the real proxy: a canceled/failed request frees its own
-			// holder through the request context, whatever its method.
-			if rel := releaserFor(r); rel != nil {
-				rel.release(r)
-			}
-			w.WriteHeader(http.StatusBadGateway)
-			fmt.Fprintf(w, "Proxy error: %s\n", err)
-		},
-	}
-	return httptest.NewServer(newHandler(lp, rp))
+	// The production ReverseProxy, so the tests exercise the real wiring
+	// (including the response-side model rewrite and CORS fix).
+	return httptest.NewServer(newHandler(lp, newReverseProxy(lp, upstream)))
 }
 
 func doRequest(t *testing.T, proxyURL, path, model, key string) (start, end time.Time, err error) {
@@ -470,13 +448,82 @@ func TestStubbedLookupAndTools(t *testing.T) {
 // extractModel from /upstream/:model/... path
 func TestExtractModelFromPath(t *testing.T) {
 	r := &http.Request{URL: &url.URL{Path: "/upstream/llama-7/v1/chat/completions"}}
-	if m := extractModel(r); m != "llama-7" {
-		t.Errorf("expected llama-7, got %q", m)
+	if m, body := extractModel(r); m != "llama-7" || body != nil {
+		t.Errorf("expected (llama-7, nil), got (%q, %v)", m, body)
 	}
 	r = &http.Request{URL: &url.URL{Path: "/upstream/my-model"}}
-	if m := extractModel(r); m != "my-model" {
+	if m, _ := extractModel(r); m != "my-model" {
 		t.Errorf("expected my-model, got %q", m)
 	}
+}
+
+// extractModel from the JSON body
+func TestExtractModelFromBody(t *testing.T) {
+	r := &http.Request{
+		URL:  &url.URL{Path: "/v1/chat/completions"},
+		Body: io.NopCloser(strings.NewReader(`{"model":"llama-7","prompt":"x"}`)),
+	}
+	if m, body := extractModel(r); m != "llama-7" || string(body) != `{"model":"llama-7","prompt":"x"}` {
+		t.Errorf("expected (llama-7, original body), got (%q, %q)", m, body)
+	}
+	r = &http.Request{
+		URL:  &url.URL{Path: "/v1/chat/completions"},
+		Body: io.NopCloser(strings.NewReader(`{"prompt":"x"}`)),
+	}
+	if m, _ := extractModel(r); m != "" {
+		t.Errorf("expected no model, got %q", m)
+	}
+}
+
+func TestParseModelRewrites(t *testing.T) {
+	t.Run("pairs", func(t *testing.T) {
+		m := parseModelRewrites("client-a=upstream-a, client-b=upstream-b")
+		if m["client-a"] != "upstream-a" || m["client-b"] != "upstream-b" || len(m) != 2 {
+			t.Errorf("got %v, want both pairs", m)
+		}
+	})
+	t.Run("malformed skipped", func(t *testing.T) {
+		m := parseModelRewrites("no-equals, =x, y=, ok=good")
+		if m["ok"] != "good" || len(m) != 1 {
+			t.Errorf("got %v, want only ok=good", m)
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		if m := parseModelRewrites(""); len(m) != 0 {
+			t.Errorf("got %v, want empty", m)
+		}
+	})
+}
+
+func TestRewriteModelInBody(t *testing.T) {
+	t.Run("match", func(t *testing.T) {
+		out, changed := rewriteModelInBody([]byte(`{"model":"a","prompt":"x"}`), "a", "b")
+		if !changed {
+			t.Fatalf("expected a change")
+		}
+		var m struct {
+			Model  string `json:"model"`
+			Prompt string `json:"prompt"`
+		}
+		if err := json.Unmarshal(out, &m); err != nil || m.Model != "b" || m.Prompt != "x" {
+			t.Errorf("got %q (%v)", out, err)
+		}
+	})
+	t.Run("no model field", func(t *testing.T) {
+		if _, changed := rewriteModelInBody([]byte(`{"prompt":"x"}`), "a", "b"); changed {
+			t.Errorf("body without a model field was rewritten")
+		}
+	})
+	t.Run("model mismatch", func(t *testing.T) {
+		if _, changed := rewriteModelInBody([]byte(`{"model":"c"}`), "a", "b"); changed {
+			t.Errorf("a non-matching model was rewritten")
+		}
+	})
+	t.Run("not json", func(t *testing.T) {
+		if _, changed := rewriteModelInBody([]byte(`not json`), "a", "b"); changed {
+			t.Errorf("a non-JSON body was rewritten")
+		}
+	})
 }
 
 // vipSet builds the vipKeys map from raw API key strings (SHA-256 hashed),
@@ -759,5 +806,234 @@ func TestCanceledGetReleasesSlot(t *testing.T) {
 	}
 	if took := time.Since(start); took > 2*time.Second {
 		t.Errorf("the canceled GET did not free its holder: the next request waited %v (grace %v, hold cap %v)", took, grace, holdCap)
+	}
+}
+
+// newEchoUpstream returns an upstream that echoes the model named in the
+// request body into its own response model field (plain JSON, or SSE when the
+// body has "stream": true), and a getter for the model the upstream last saw.
+func newEchoUpstream(t *testing.T, sleep time.Duration) (*httptest.Server, func() string) {
+	t.Helper()
+	var (
+		mu   sync.Mutex
+		last string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
+		_ = json.Unmarshal(body, &req)
+		mu.Lock()
+		last = req.Model
+		mu.Unlock()
+		time.Sleep(sleep)
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			f := w.(http.Flusher)
+			fmt.Fprintf(w, "data: {\"model\":%q,\"id\":\"1\"}\n\n", req.Model)
+			f.Flush()
+			fmt.Fprint(w, "data: [DONE]\n\n")
+			f.Flush()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"model":%q,"id":"1"}`, req.Model)
+	}))
+	return srv, func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return last
+	}
+}
+
+// A request that names a mapped model must reach the upstream under the
+// upstream name, and the upstream's answer must come back under the client
+// name: neither direction may leak the other name.
+func TestRequestAndResponseModelRewritten(t *testing.T) {
+	old := modelRewrites
+	modelRewrites = map[string]string{"client-model": "upstream-model"}
+	defer func() { modelRewrites = old }()
+
+	upstream, received := newEchoUpstream(t, 50*time.Millisecond)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("POST", proxy.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"client-model","prompt":"x"}`))
+	req.Header.Set("Authorization", "keyA")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%q)", resp.StatusCode, data)
+	}
+	if got := received(); got != "upstream-model" {
+		t.Errorf("upstream saw model %q, want upstream-model", got)
+	}
+	var out struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("response is not JSON: %v (%q)", err, data)
+	}
+	if out.Model != "client-model" {
+		t.Errorf("client saw model %q, want client-model", out.Model)
+	}
+	if resp.ContentLength < 0 || int(resp.ContentLength) != len(data) {
+		t.Errorf("ContentLength %d does not match body length %d", resp.ContentLength, len(data))
+	}
+}
+
+// The same contract for streaming (SSE) responses: every data line must carry
+// the client name, the stream must stay a stream, and the terminator survives.
+func TestSSEModelRewritten(t *testing.T) {
+	old := modelRewrites
+	modelRewrites = map[string]string{"client-model": "upstream-model"}
+	defer func() { modelRewrites = old }()
+
+	upstream, received := newEchoUpstream(t, 50*time.Millisecond)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	req, _ := http.NewRequest("POST", proxy.URL+"/v1/chat/completions",
+		strings.NewReader(`{"model":"client-model","stream":true}`))
+	req.Header.Set("Authorization", "keyA")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	s := string(data)
+	if strings.Contains(s, "upstream-model") {
+		t.Errorf("upstream name leaked into the SSE stream: %s", s)
+	}
+	if !strings.Contains(s, `"model":"client-model"`) {
+		t.Errorf("client name missing from SSE chunks: %s", s)
+	}
+	if !strings.Contains(s, "data: [DONE]") {
+		t.Errorf("SSE terminator lost: %s", s)
+	}
+	if got := received(); got != "upstream-model" {
+		t.Errorf("upstream saw model %q, want upstream-model", got)
+	}
+}
+
+// A model that is not in the rewrite map must pass through unchanged in both
+// directions, and a request that names no model must be rewritten neither
+// way.
+func TestUnmappedModelPassesThrough(t *testing.T) {
+	old := modelRewrites
+	modelRewrites = map[string]string{"other-model": "other-upstream"}
+	defer func() { modelRewrites = old }()
+
+	upstream, received := newEchoUpstream(t, 50*time.Millisecond)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	for _, body := range []string{`{"model":"my-model"}`, `{"prompt":"x"}`} {
+		req, _ := http.NewRequest("POST", proxy.URL+"/v1/chat/completions", strings.NewReader(body))
+		req.Header.Set("Authorization", "keyA")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request %q failed: %v", body, err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		want := "my-model"
+		if body == `{"prompt":"x"}` {
+			want = ""
+		}
+		if got := received(); got != want {
+			t.Errorf("request %q: upstream saw model %q, want %q", body, got, want)
+		}
+		var out struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(data, &out)
+		if out.Model != want {
+			t.Errorf("request %q: client saw model %q, want %q", body, out.Model, want)
+		}
+	}
+}
+
+// Two aliases of one real model must share its slot like same-model requests,
+// while a different real model still queues behind them.
+func TestRewrittenAliasesShareSlot(t *testing.T) {
+	const sleep = 400 * time.Millisecond
+	const grace = 300 * time.Millisecond
+
+	upstream := newFakeUpstream(t, sleep)
+	defer upstream.Close()
+	upURL, _ := url.Parse(upstream.URL)
+
+	oldGrace := gracePeriod
+	oldRewrites := modelRewrites
+	gracePeriod = grace
+	modelRewrites = map[string]string{
+		"alias-a": "real-model",
+		"alias-b": "real-model",
+	}
+	defer func() { gracePeriod, modelRewrites = oldGrace, oldRewrites }()
+
+	proxy := newTestProxy(upURL)
+	defer proxy.Close()
+
+	var (
+		wg       sync.WaitGroup
+		a1s, a1e time.Time
+		bs, be   time.Time
+		cs, ce   time.Time
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
+		bs, be, _ = doRequest(t, proxy.URL, "/v1/chat/completions", "alias-b", "keyB")
+	}()
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
+		cs, ce, _ = doRequest(t, proxy.URL, "/v1/chat/completions", "other-model", "keyC")
+	}()
+	a1s, a1e, err := doRequest(t, proxy.URL, "/v1/chat/completions", "alias-a", "keyA")
+	if err != nil {
+		t.Fatalf("A1 failed: %v", err)
+	}
+	wg.Wait()
+
+	if be.Sub(bs) > 2*sleep {
+		t.Errorf("B (an alias of the held real model) should re-enter, took %v (expected < %v)", be.Sub(bs), 2*sleep)
+	}
+	if a1e.Sub(a1s) > 2*sleep {
+		t.Errorf("A1 was unexpectedly blocked, took %v", a1e.Sub(a1s) )
+	}
+	lastA := a1e
+	if be.After(lastA) {
+		lastA = be
+	}
+	// C (a different real model) must not be released before the later of
+	// A1/B finished + grace period.
+	earliestC := lastA.Add(grace)
+	if ce.Before(earliestC.Add(-100 * time.Millisecond)) {
+		t.Errorf("C released too early: finished %v, but grace ends at %v", ce, earliestC)
+	}
+	if ce.Sub(cs) > 3*time.Second {
+		t.Errorf("C took too long: %v (grace %v)", ce.Sub(cs), grace)
 	}
 }

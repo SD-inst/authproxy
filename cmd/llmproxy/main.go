@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -14,6 +15,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -40,6 +43,15 @@ var (
 	// hardCap is the safety net: it frees the slot even if a response body never
 	// closes (stuck upstream connection). Mirrors llm.go's cleanup timeout.
 	hardCap = parseDuration(os.Getenv("LLM_PROXY_HOLD_TIMEOUT"), 5*time.Minute)
+	// modelRewrites transparently maps client-side model names to the names the
+	// upstream is sent and the responses must carry back. Parsed from
+	// LLM_PROXY_MODEL_REWRITES ("client=upstream" pairs, comma-separated): a
+	// request that names a mapped model is rewritten to the upstream name
+	// before it is proxied, and the upstream's answer is rewritten back to the
+	// client name, so the client never sees the upstream's name. This lets one
+	// upstream model stand in for another (e.g. a model that runs in a
+	// separate container) without changing the name clients already use.
+	modelRewrites = parseModelRewrites(os.Getenv("LLM_PROXY_MODEL_REWRITES"))
 )
 
 func parseDuration(s string, def time.Duration) time.Duration {
@@ -71,6 +83,28 @@ func parseVipKeys(s string) map[[32]byte]bool {
 		var k [32]byte
 		copy(k[:], b)
 		m[k] = true
+	}
+	return m
+}
+
+// parseModelRewrites parses LLM_PROXY_MODEL_REWRITES (comma-separated
+// "client=upstream" pairs) into a map from the client-side model name to the
+// name the upstream is sent. Malformed entries (no "=", or an empty side) are
+// skipped with a log; a repeated client name keeps its last pair.
+func parseModelRewrites(s string) map[string]string {
+	m := make(map[string]string)
+	for _, part := range strings.Split(s, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		from, to, ok := strings.Cut(p, "=")
+		from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+		if !ok || from == "" || to == "" {
+			log.Printf("Invalid model rewrite %q (want client=upstream), skipping", p)
+			continue
+		}
+		m[from] = to
 	}
 	return m
 }
@@ -116,6 +150,12 @@ func (s *slotRelease) release(r *http.Request) {
 	})
 }
 
+// modelRewriteKey carries the client-side model name of an aliased request
+// (see modelRewrites) through the request context: the request body is consumed
+// and rewritten before the proxy sends it, so the response path recovers the
+// original name from here to rewrite the answer back.
+type modelRewriteKey struct{}
+
 // releaserFor returns the releaser attached to a proxied request, or nil when
 // the request never entered the queue (not an LLM path, or a locally stubbed
 // route) and therefore has no slot to free.
@@ -160,32 +200,74 @@ func graceDelay(r *http.Request) time.Duration {
 	return 0
 }
 
-func extractModel(r *http.Request) string {
-	path := r.URL.Path
-
+// pathModel returns the model named by a /upstream/:model/... path (up to the
+// first /v1/ segment), or "" for any other path.
+func pathModel(path string) string {
 	if m, ok := strings.CutPrefix(path, "/upstream/"); ok {
-		model := m
-		if idx := strings.Index(model, "/v1/"); idx >= 0 {
-			model = model[:idx]
+		if idx := strings.Index(m, "/v1/"); idx >= 0 {
+			m = m[:idx]
 		}
-		return model
+		return m
 	}
+	return ""
+}
 
+// extractModel returns the model a request names and the request's raw body.
+// The model comes from the /upstream/:model/... path prefix when present (the
+// body is left untouched and the body result is nil), otherwise from the
+// "model" field of the JSON body. The body branch consumes the request body,
+// so the caller must re-attach the returned bytes to the request before it is
+// served.
+func extractModel(r *http.Request) (model string, body []byte) {
+	if m := pathModel(r.URL.Path); m != "" {
+		return m, nil
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("extractModel: reading body: %s", err)
-		return ""
+		return "", body
 	}
-	r.Body = io.NopCloser(bytes.NewBuffer(body))
 
 	var req struct {
 		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		log.Printf("extractModel: parsing body: %s", err)
-		return ""
+		return "", body
 	}
-	return req.Model
+	return req.Model, body
+}
+
+// rewriteModelInBody replaces the "model" field of a JSON object body that
+// equals from with to, reporting whether anything changed. The body is
+// returned unchanged when it is not a JSON object, has no "model" field, or
+// the field does not equal from; all other fields pass through byte-for-byte.
+func rewriteModelInBody(body []byte, from, to string) ([]byte, bool) {
+	if from == "" || from == to {
+		return body, false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return body, false
+	}
+	raw, ok := obj["model"]
+	if !ok {
+		return body, false
+	}
+	var cur string
+	if err := json.Unmarshal(raw, &cur); err != nil || cur != from {
+		return body, false
+	}
+	renamed, err := json.Marshal(to)
+	if err != nil {
+		return body, false
+	}
+	obj["model"] = renamed
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return body, false
+	}
+	return out, true
 }
 
 func getAPIKey(r *http.Request) string {
@@ -203,6 +285,105 @@ func getAPIKey(r *http.Request) string {
 func forceCORS(h http.Header) {
 	h.Del("Access-Control-Allow-Origin")
 	h.Set("Access-Control-Allow-Origin", "*")
+}
+
+// rewriteResponseModel makes an aliased request's answer carry the client-side
+// model name again: the upstream responded with the name it was sent, and the
+// client must not see it. A JSON body is re-encoded whole (its Content-Length
+// is corrected to match); an SSE stream is rewritten line by line as it flows,
+// so the response stays live end to end. A response whose model field is
+// absent or does not match the upstream name passes through unchanged.
+func rewriteResponseModel(resp *http.Response, from, to string) {
+	ct := resp.Header.Get("Content-Type")
+	switch {
+	case strings.HasPrefix(ct, "text/event-stream"):
+		resp.Body = &sseModelRewriteBody{orig: resp.Body, from: from, to: to}
+	case strings.HasPrefix(ct, "application/json"):
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close() // the upstream response is fully received; its connection is released
+		body, _ = rewriteModelInBody(body, from, to)
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	}
+}
+
+// sseModelRewriteBody streams an SSE response, replacing the "model" field of
+// each "data:" line that carries the upstream name with the client's name.
+// It reads line by line, so the stream stays live: at any moment only the
+// current event is in flight, and a client disconnect propagates to the
+// upstream through the original body's Read/Close.
+type sseModelRewriteBody struct {
+	orig io.ReadCloser
+	from string
+	to   string
+
+	sc   *bufio.Scanner
+	buf  bytes.Buffer
+	done bool
+	err  error
+}
+
+func (m *sseModelRewriteBody) Close() error {
+	return m.orig.Close()
+}
+
+func (m *sseModelRewriteBody) Read(p []byte) (int, error) {
+	if m.sc == nil {
+		m.sc = bufio.NewScanner(m.orig)
+		m.sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	}
+	for m.buf.Len() == 0 {
+		if m.done {
+			return 0, m.err
+		}
+		if !m.sc.Scan() {
+			m.done = true
+			m.err = m.sc.Err() // nil on clean EOF
+			if m.err == nil {
+				m.err = io.EOF
+			}
+			return 0, m.err
+		}
+		m.buf.Write(m.rewriteLine(m.sc.Bytes()))
+		m.buf.WriteByte('\n')
+	}
+	return m.buf.Read(p)
+}
+
+// rewriteLine rewrites one SSE line in place, returning it unchanged unless it
+// is a "data:" line whose JSON payload carries a model field equal to from.
+func (m *sseModelRewriteBody) rewriteLine(line []byte) []byte {
+	const prefix = "data:"
+	if !bytes.HasPrefix(line, []byte(prefix)) {
+		return line
+	}
+	payload := bytes.TrimSpace(line[len(prefix):])
+	if len(payload) == 0 || payload[0] != '{' {
+		return line // "data: [DONE]", comments, non-JSON
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return line
+	}
+	raw, ok := obj["model"]
+	if !ok {
+		return line
+	}
+	var cur string
+	if err := json.Unmarshal(raw, &cur); err != nil || cur != m.from {
+		return line
+	}
+	renamed, err := json.Marshal(m.to)
+	if err != nil {
+		return line
+	}
+	obj["model"] = renamed
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return line
+	}
+	return append([]byte(prefix+" "), out...)
 }
 
 func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
@@ -254,21 +435,53 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		// proxy error handler, not by ServeHTTP returning.
 		sq := lp.sq
 		sq.Lock()
-		var model string
+		var (
+			model   string
+			rawBody []byte
+		)
 		if r.Method == "POST" {
-			model = extractModel(r)
+			model, rawBody = extractModel(r)
 			if model == "" {
 				log.Printf("POST %s has no model field", r.URL.Path)
 			}
 		}
 		apiKey := getAPIKey(r)
+
+		// LLM_PROXY_MODEL_REWRITES transparently maps a client-side model name
+		// to the name the upstream is sent: a request that names a mapped model
+		// is rewritten to the upstream name before it is proxied, and the
+		// upstream's answer is rewritten back to the client name (see
+		// rewriteResponseModel), so the client never sees the upstream's name.
+		// Only body-named models are aliased: a /upstream/:model/ path names the
+		// model in the URL, which this proxy does not re-route.
+		outModel := model
+		if model != "" && pathModel(r.URL.Path) == "" {
+			if to, ok := modelRewrites[model]; ok {
+				outModel = to
+				r = r.WithContext(context.WithValue(r.Context(), modelRewriteKey{}, model))
+				if newBody, changed := rewriteModelInBody(rawBody, model, to); changed {
+					rawBody = newBody
+				}
+			}
+		}
+		if rawBody != nil {
+			// The body was consumed by extractModel; re-attach it (possibly
+			// rewritten) so the proxy can send it to the upstream. A definite
+			// Content-Length also normalizes requests that arrived chunked.
+			r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
+			r.ContentLength = int64(len(rawBody))
+		}
+
 		if r.Method == "POST" {
 			var queuedLogged bool
 			sq.AwaitWithPredicateAndDescription(servicequeue.LLM, true, func() bool {
 				// Re-enter only when the requested model matches the held one
 				// (or either side is unknown); a different model is queued
-				// rather than sharing the slot.
-				canReent := model == "" || lp.model == "" || lp.model == model
+				// rather than sharing the slot. The comparison is on the
+				// upstream (effective) name, so aliases of one real model share
+				// its slot, and a client that names the real name directly
+				// shares it too.
+				canReent := outModel == "" || lp.model == "" || lp.model == outModel
 				// A VIP key holds its model exclusively: a non-VIP key may not
 				// intercept (re-enter) the slot while the current holder is VIP, so
 				// it stays queued until the VIP's grace period expires and the slot
@@ -290,9 +503,10 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 			// A request that names no model cannot change which model is held, so
 			// it must not overwrite the held model with "": an empty held model
 			// makes the re-entry predicate match every other model, letting an
-			// unrelated request interrupt a generation already in flight.
-			if model != "" {
-				lp.model = model
+			// unrelated request interrupt a generation already in flight. The held
+			// model is the upstream name: it is what the upstream actually loads.
+			if outModel != "" {
+				lp.model = outModel
 			}
 		} else {
 			sq.Await(servicequeue.LLM, false)
@@ -318,7 +532,11 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		r = r.WithContext(context.WithValue(r.Context(), releaseKey{}, rel))
 		sq.Unlock()
 
-		log.Printf("Serving: model=%s", model)
+		if outModel != model {
+			log.Printf("Serving: model=%s (upstream: %s)", model, outModel)
+		} else {
+			log.Printf("Serving: model=%s", model)
+		}
 
 		rp.ServeHTTP(w, r)
 	})
@@ -329,6 +547,63 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		fmt.Fprint(w, "ok")
 	})
 	return serveMux
+}
+
+// newReverseProxy assembles the upstream-facing ReverseProxy (shared by main
+// and the tests, so the tests exercise the production wiring): the targeting
+// director, the CORS fix, the response-side model rewrite for aliased
+// requests, and the queue release wiring.
+func newReverseProxy(lp *llmProxy, upstream *url.URL) *httputil.ReverseProxy {
+	sq := lp.sq
+	return &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = upstream.Scheme
+			req.URL.Host = upstream.Host
+			delete(req.Header, "X-Forwarded-For")
+			req.Header.Set("X-Forwarded-For", req.RemoteAddr)
+		},
+		// Mirrors llm.go's After interceptor: arm the hard-cap cleanup and wrap
+		// the response body so the slot is released when the body closes (grace)
+		// instead of when ServeHTTP returns.
+		ModifyResponse: func(resp *http.Response) error {
+			// Runs before the upstream headers are copied to the client, so this
+			// is where duplicated upstream values are collapsed into one.
+			forceCORS(resp.Header)
+			rel := releaserFor(resp.Request)
+			if rel == nil {
+				// A request that never entered the queue has no slot to keep or
+				// to free (this covers every non-LLM path).
+				return nil
+			}
+			// An aliased request (LLM_PROXY_MODEL_REWRITES) must see its own
+			// name in the answer: the upstream responded with the name it was
+			// sent, and the client must not see it. Runs before the release
+			// wrapping, which re-wraps whatever resp.Body holds — so a rewritten
+			// body (re-encoded JSON or the live SSE transformer) is the one
+			// whose close releases the slot.
+			if clientName, ok := resp.Request.Context().Value(modelRewriteKey{}).(string); ok {
+				if upstreamName, ok := modelRewrites[clientName]; ok {
+					rewriteResponseModel(resp, upstreamName, clientName)
+				}
+			}
+			return sq.ServiceCloserWithRelease(servicequeue.LLM, hardCap, func() {
+				rel.release(resp.Request)
+			})(resp.Request, resp)
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("Proxy error: %s", err)
+			// The request failed without (or before) a response, so the
+			// body-close release never runs. Free the holder of this very
+			// request, whatever its method: Hold is taken for every method that
+			// enters the queue, so the release must not be method-dependent.
+			if rel := releaserFor(r); rel != nil {
+				rel.release(r)
+			}
+			forceCORS(w.Header())
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprintf(w, "Proxy error: %s\n", err)
+		},
+	}
 }
 
 func main() {
@@ -359,44 +634,7 @@ func main() {
 		client: http.Client{},
 	}
 
-	reverseProxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = upstream.Scheme
-			req.URL.Host = upstream.Host
-			delete(req.Header, "X-Forwarded-For")
-			req.Header.Set("X-Forwarded-For", req.RemoteAddr)
-		},
-		// Mirrors llm.go's After interceptor: arm the hard-cap cleanup and wrap
-		// the response body so the slot is released when the body closes (grace)
-		// instead of when ServeHTTP returns.
-		ModifyResponse: func(resp *http.Response) error {
-			// Runs before the upstream headers are copied to the client, so this
-			// is where duplicated upstream values are collapsed into one.
-			forceCORS(resp.Header)
-			rel := releaserFor(resp.Request)
-			if rel == nil {
-				// A request that never entered the queue has no slot to keep or
-				// to free (this covers every non-LLM path).
-				return nil
-			}
-			return sq.ServiceCloserWithRelease(servicequeue.LLM, hardCap, func() {
-				rel.release(resp.Request)
-			})(resp.Request, resp)
-		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("Proxy error: %s", err)
-			// The request failed without (or before) a response, so the
-			// body-close release never runs. Free the holder of this very
-			// request, whatever its method: Hold is taken for every method that
-			// enters the queue, so the release must not be method-dependent.
-			if rel := releaserFor(r); rel != nil {
-				rel.release(r)
-			}
-			forceCORS(w.Header())
-			w.WriteHeader(http.StatusBadGateway)
-			fmt.Fprintf(w, "Proxy error: %s\n", err)
-		},
-	}
+	reverseProxy := newReverseProxy(lp, upstream)
 
 	server := &http.Server{
 		Addr:         listenAddr,
@@ -417,6 +655,14 @@ func main() {
 	log.Printf("LLM Proxy listening on %s, upstream: %s", listenAddr, upstreamAddr)
 	if len(vipKeys) > 0 {
 		log.Printf("VIP keys configured: %d, VIP grace period: %s", len(vipKeys), vipGracePeriod)
+	}
+	if len(modelRewrites) > 0 {
+		pairs := make([]string, 0, len(modelRewrites))
+		for from, to := range modelRewrites {
+			pairs = append(pairs, from+"="+to)
+		}
+		sort.Strings(pairs)
+		log.Printf("Model rewrites: %s", strings.Join(pairs, ", "))
 	}
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %s", err)
