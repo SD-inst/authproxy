@@ -29,6 +29,9 @@ task_max_lifetime: "2h"
 #   - "203.0.113.7"        # single IP
 #   - "198.51.100.0/24"    # CIDR range
 acl:
+    # The container-control page and its endpoints (/admin) are served to the
+    # account named "admin" only, regardless of the ACL; the ACL still has to
+    # let that account reach the site ("*" below).
     admin: ["*"]
     alice:
         - a1111

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Containers</title>
+<style>
+    /* One palette per browser preference: the light values live in :root, the
+       dark ones replace them under prefers-color-scheme. Every rule below reads
+       the variables, so a new element only needs the right ones. */
+    :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #111827;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --btn-bg: #ffffff;
+        --btn-line: #d1d5db;
+        --accent: #0060df;
+        --running: #047857;
+        --banner-bg: #fef3c7;
+        --banner-line: #fcd34d;
+        --error-bg: #fee2e2;
+        --error-line: #fca5a5;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --bg: #15171c;
+            --fg: #e5e7eb;
+            --muted: #9ca3af;
+            --line: #333842;
+            --btn-bg: #1f232b;
+            --btn-line: #4b5563;
+            --accent: #60a5fa;
+            --running: #34d399;
+            --banner-bg: #33290f;
+            --banner-line: #6b5320;
+            --error-bg: #351515;
+            --error-line: #7f2626;
+        }
+    }
+
+    body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        margin: 24px auto;
+        max-width: 46rem;
+        padding: 0 16px;
+        color: var(--fg);
+        background: var(--bg);
+    }
+
+    h1 {
+        font-size: 1.4rem;
+        margin-bottom: 4px;
+    }
+
+    .note {
+        color: var(--muted);
+        font-size: .85rem;
+        margin: 0 0 16px;
+    }
+
+    table {
+        border-collapse: collapse;
+        width: 100%;
+    }
+
+    th, td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--line);
+        font-size: .95rem;
+    }
+
+    th {
+        color: var(--muted);
+        font-weight: 500;
+        font-size: .85rem;
+    }
+
+    td.actions {
+        white-space: nowrap;
+    }
+
+    button {
+        font: inherit;
+        font-size: .85rem;
+        padding: 4px 10px;
+        margin-right: 6px;
+        border: 1px solid var(--btn-line);
+        border-radius: 6px;
+        background: var(--btn-bg);
+        color: var(--fg);
+        cursor: pointer;
+    }
+
+    button:hover:not(:disabled) {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+
+    button:disabled {
+        opacity: .45;
+        cursor: default;
+    }
+
+    .state {
+        font-weight: 600;
+    }
+
+    .state.on {
+        color: var(--running);
+    }
+
+    .state.off {
+        color: var(--muted);
+    }
+
+    .banner, .error {
+        border-radius: 8px;
+        padding: 8px 12px;
+        margin-bottom: 14px;
+        font-size: .9rem;
+    }
+
+    .banner {
+        background: var(--banner-bg);
+        border: 1px solid var(--banner-line);
+    }
+
+    .error {
+        background: var(--error-bg);
+        border: 1px solid var(--error-line);
+    }
+
+    .hidden {
+        display: none;
+    }
+
+    #updated {
+        color: var(--muted);
+        font-size: .8rem;
+        margin-left: 8px;
+    }
+
+    .mono {
+        font-variant-numeric: tabular-nums;
+    }
+
+    .off-hint {
+        color: var(--muted);
+    }
+</style>
+</head>
+<body>
+<h1>Containers</h1>
+<p class="note">The state below is what authproxy itself tracks: containers it starts on demand. Anything started outside authproxy is not listed here. A container with auto-stop off stays up until it is stopped here.</p>
+
+<div id="banner" class="banner hidden"></div>
+<div id="error" class="error hidden"></div>
+
+<table>
+    <thead>
+    <tr>
+        <th>Service</th>
+        <th>State</th>
+        <th>Last activity</th>
+        <th>Auto-stop in</th>
+        <th>Actions</th>
+    </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+</table>
+
+<p>
+    <button id="refresh">Refresh</button>
+    <span id="updated"></span>
+</p>
+
+<script>
+    const REFRESH_MS = 4000;
+    const rows = document.getElementById('rows');
+    const banner = document.getElementById('banner');
+    const errorBox = document.getElementById('error');
+    const updated = document.getElementById('updated');
+    const refreshBtn = document.getElementById('refresh');
+
+    // busy serializes the page: while a control request is running (a start
+    // waits for the container to become healthy, which can take a minute), no
+    // other action and no auto refresh is issued.
+    let busy = false;
+
+    function setError(message) {
+        if (!message) {
+            errorBox.classList.add('hidden');
+            errorBox.textContent = '';
+            return;
+        }
+        errorBox.textContent = message;
+        errorBox.classList.remove('hidden');
+    }
+
+    function setBusy(state) {
+        busy = state;
+        for (const button of document.querySelectorAll('button')) {
+            button.disabled = state;
+        }
+    }
+
+    function render(status) {
+        banner.classList.add('hidden');
+        if (status.downtime) {
+            banner.textContent = 'Downtime mode is active: requests to stopped services get 502 instead of starting them. A manual start here still works.';
+            banner.classList.remove('hidden');
+        }
+        if (!status.auto_control) {
+            banner.textContent = 'No watchdog address is configured, so container control is off — the actions below cannot run.';
+            banner.classList.remove('hidden');
+        }
+
+        rows.textContent = '';
+        for (const svc of status.services) {
+            const tr = document.createElement('tr');
+
+            const name = document.createElement('td');
+            name.textContent = svc.service;
+            tr.appendChild(name);
+
+            const state = document.createElement('td');
+            state.className = 'state ' + (svc.running ? 'on' : 'off');
+            state.textContent = svc.running ? 'running' : 'stopped';
+            tr.appendChild(state);
+
+            const last = document.createElement('td');
+            last.className = 'mono';
+            last.textContent = svc.last_activity ? new Date(svc.last_activity).toLocaleString() : '—';
+            tr.appendChild(last);
+
+            const idle = document.createElement('td');
+            idle.className = 'mono';
+            if (!svc.idle_stop) {
+                idle.className += ' off-hint';
+                idle.textContent = 'off';
+            } else {
+                idle.textContent = svc.idle_stop_in || '—';
+            }
+            tr.appendChild(idle);
+
+            const actions = document.createElement('td');
+            actions.className = 'actions';
+            for (const op of ['start', 'stop', 'restart']) {
+                const button = document.createElement('button');
+                button.textContent = op;
+                button.onclick = () => control(svc.service, op);
+                actions.appendChild(button);
+            }
+            tr.appendChild(actions);
+
+            rows.appendChild(tr);
+        }
+        updated.textContent = 'updated ' + new Date().toLocaleTimeString();
+    }
+
+    async function fetchStatus() {
+        if (busy) {
+            return;
+        }
+        try {
+            const response = await fetch('/admin/containers', {headers: {'Accept': 'application/json'}});
+            if (!response.ok) {
+                setError('Cannot load the container list: HTTP ' + response.status);
+                return;
+            }
+            setError('');
+            render(await response.json());
+        } catch (e) {
+            setError('Cannot load the container list: ' + e);
+        }
+    }
+
+    function confirmText(service, op) {
+        if (op === 'stop') {
+            return 'Stop ' + service + '? Its memory is freed right away and the next request to it will start it again.';
+        }
+        if (op === 'restart') {
+            return 'Restart ' + service + '? A running task in it will be lost.';
+        }
+        return 'Start ' + service + '?';
+    }
+
+    async function control(service, op) {
+        if (busy || !confirm(confirmText(service, op))) {
+            return;
+        }
+        setBusy(true);
+        setError('');
+        try {
+            const response = await fetch('/admin/container', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({service: service, op: op})
+            });
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                setError(op + ' ' + service + ' failed: ' + (body.message || 'HTTP ' + response.status));
+            } else {
+                render(body);
+            }
+        } catch (e) {
+            setError(op + ' ' + service + ' failed: ' + e);
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    refreshBtn.onclick = fetchStatus;
+    fetchStatus();
+    setInterval(fetchStatus, REFRESH_MS);
+</script>
+</body>
+</html>

@@ -190,7 +190,7 @@ func main() {
 	}))
 	e.Use(middleware.RequestLoggerWithConfig(middleware.RequestLoggerConfig{
 		Skipper: func(c echo.Context) bool {
-			return c.Path() == "/q/status.json" || c.Path() == "/metrics"
+			return c.Path() == "/q/status.json" || c.Path() == "/metrics" || c.Path() == "/admin/containers"
 		},
 		LogRemoteIP:     true,
 		LogURI:          true,
@@ -230,6 +230,7 @@ func main() {
 	} else {
 		log.Printf("Watchdog disabled (--watchdog not set): container auto start/stop and restart-on-demand are OFF")
 	}
+	addAdminHandlers(e, m)
 	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)
 	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken, sq)
@@ -322,16 +323,23 @@ func main() {
 			e.Group(d, earlyCheckMiddleware(d), trail, t)
 		}
 	}
-	e.Group("/sdapi", m.ensureService("stablediff-cuda"), sdProxy)
+	e.Group("/sdapi", m.ensureService(sdService), sdProxy)
 	addSDQueueHandlers(e, sq, pr)
 	addASQueueHandlers(e, sq, pr)
 	if llmurl.Scheme != "" {
 		llm := NewLLMBalancer(llmurl, sq, mchan)
+		// The LLM container is tracked like the others and is woken by a request
+		// when it is down, but it is never stopped for idleness: llama-swap does
+		// its own model swapping and staying loaded is the point. Only an
+		// explicit stop on /admin takes it down. The wake goes on the routes that
+		// actually reach llama-swap; lookup and tools are answered here and must
+		// not start anything.
+		llmWake := m.ensureService(llmService)
 		e.POST("/upstream/:model/v1/streams/lookup", llm.lookup)
 		e.GET("/upstream/:model/tools", llm.tools)
-		e.Group("/v1/*", llm.proxy)
-		e.Group("/upstream/*", llm.proxy)
-		e.POST("/v1/internal/encode", nil, llm.proxy)
+		e.Group("/v1/*", llmWake, llm.proxy)
+		e.Group("/upstream/*", llmWake, llm.proxy)
+		e.POST("/v1/internal/encode", nil, llmWake, llm.proxy)
 		e.Any("/v1/internal/*", llm.forbidden)
 		e.GET("/v1/models/*", llm.forbidden)
 	}
@@ -356,7 +364,7 @@ func main() {
 		// static route so it never reaches ensureService. Stopped → empty stub,
 		// running → real proxy.
 		e.Any("/cui/api/jobs", m.cuiJobsHandler(cuiJobsPath), earlyCheckMiddleware("/cui/api/jobs"))
-		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), m.ensureService("comfyui"), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
+		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), m.ensureService(comfyService), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	if config.StaticPath != "" {
 		dirs, err := os.ReadDir(config.StaticPath)

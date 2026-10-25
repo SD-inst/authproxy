@@ -80,13 +80,13 @@ func (m *containerManager) cuiWSHandler(real echo.HandlerFunc) echo.HandlerFunc 
 		// During an active downtime a stopped container is not served by the
 		// silent (fake) websocket either: answer with a 502 so Caddy can show
 		// the maintenance/timer page. Mirrors the ensureService guard.
-		if m != nil && m.downtime && !m.isRunning("comfyui") {
+		if m != nil && m.downtime && !m.isRunning(comfyService) {
 			return echo.NewHTTPError(http.StatusBadGateway, "service temporarily unavailable")
 		}
-		if m == nil || !m.enabled() || m.isRunning("comfyui") {
+		if m == nil || !m.enabled() || m.isRunning(comfyService) {
 			return real(c)
 		}
-		return m.silentWS("comfyui", c)
+		return m.silentWS(comfyService, c)
 	}
 }
 
@@ -111,7 +111,7 @@ var cuiJobsStub = map[string]any{
 // the page's post-reconnect API burst would restart the container.
 func (m *containerManager) cuiJobsHandler(real echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
-		if m == nil || !m.enabled() || m.isRunning("comfyui") {
+		if m == nil || !m.enabled() || m.isRunning(comfyService) {
 			return real(c)
 		}
 		return c.JSON(http.StatusOK, cuiJobsStub)
