@@ -204,7 +204,8 @@ func (p *progress) updater() {
 	// taskDesc is the progress-level task line ("rendering 12/20 steps",
 	// "magnum-v4-12b-Q8_0-HF: 231 tokens generated"). It is sticky: every
 	// broadcast carries it, so a per-second ETA tick never wipes the line, and
-	// it survives until the next task starts. The page and status.json fall
+	// it outlives the task (through the grace window and after the slot is
+	// freed) until the next task replaces it. The page and status.json fall
 	// back to the service-level description (the model name) when it is empty.
 	taskDesc := ""
 	// jobActive is true while a job is running (service not NONE). It gates the
@@ -384,11 +385,15 @@ func (p *progress) updater() {
 			jobActive = false
 			lastJobCount = 0
 			curColor = ""
-			taskDesc = ""
+			// The task line is kept: it is the record of what the task just did
+			// (the generated-token count of the last LLM generation, the last
+			// step count), and it is replaced when the next task starts. Wiping
+			// it here made the count vanish the moment the generation ended.
 			broadcast()
 		case svc := <-p.startJob:
 			// Service transitioned from NONE/WAIT to an active service:
 			// start the duration timer.
+			curSvcWas := curSvc
 			curSvc = svc
 			jobStart = time.Now()
 			jobActive = true
@@ -397,11 +402,15 @@ func (p *progress) updater() {
 			// their request runs. A1111 and ComfyUI refine it from their
 			// progress stream on the next update.
 			lastJobCount = 1
-			// A new task starts with a clean line and a clean token counter:
-			// the previous task's generation was already reported.
-			taskDesc = ""
-			p.llmTokens.Store(0)
-			p.llmModel.Store("")
+			// A chained LLM request (WAIT -> LLM inside the grace window) is a
+			// continuation of the same working session: an agent's back-to-back
+			// requests must not blank the token line or restart the count. A
+			// fresh acquisition (from NONE) or another service starts clean.
+			if svc != servicequeue.LLM || curSvcWas != servicequeue.WAIT {
+				taskDesc = ""
+				p.llmTokens.Store(0)
+				p.llmModel.Store("")
+			}
 			// Announce the start right away: a service that reports no progress
 			// (the LLM) would otherwise leave the page waiting up to a second
 			// for the next ETA tick to learn the task began.

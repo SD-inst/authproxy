@@ -46,6 +46,21 @@ func waitForProgress(t *testing.T, b *events.Broker, pred func(ProgressUpdate) b
 	}
 }
 
+// lastProgress returns the broker's cached last progress packet, failing the
+// test when there is none.
+func lastProgress(t *testing.T, b *events.Broker) ProgressUpdate {
+	t.Helper()
+	pkt, ok := b.State(events.PROGRESS_UPDATE).(events.Packet)
+	if !ok {
+		t.Fatal("no progress packet cached")
+	}
+	pu, ok := pkt.Data.(ProgressUpdate)
+	if !ok {
+		t.Fatalf("unexpected progress packet payload %T", pkt.Data)
+	}
+	return pu
+}
+
 // An LLM request holds the service slot but never reports a progress fraction.
 // The page must still see one active task, an indeterminate (full, striped)
 // bar, the key's color, and the generated-token count as the task line.
@@ -71,15 +86,47 @@ func TestLLMTaskVisibleWithoutProgressReports(t *testing.T) {
 		t.Errorf("expected the configured key color in the packet, got %q", pu.Color)
 	}
 
-	// The slot is freed: no active task, no indeterminate bar, and the token
-	// line is cleared with the task.
+	// The slot is freed: no active task, no indeterminate bar, no color. The
+	// token line survives: it is the record of what the task just generated,
+	// and wiping it here is what made the count vanish as soon as the
+	// generation ended.
 	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.WAIT, WaitType: servicequeue.LLM}
 	pu = waitForProgress(t, broker, func(pu ProgressUpdate) bool {
-		return !pu.Indeterminate && pu.Current == 0 && pu.Description == ""
+		return !pu.Indeterminate && pu.Current == 0
 	})
 	if pu.Color != "" {
 		t.Errorf("expected the color to clear with the slot, got %q", pu.Color)
 	}
+	if pu.Description != "magnum-test: 100 tokens generated" {
+		t.Errorf("expected the token line to survive the task end, got %q", pu.Description)
+	}
+}
+
+// An agent fires requests back to back, so the slot only drops to WAIT between
+// them. The count must keep running across those blips instead of appearing
+// and vanishing on every request boundary.
+func TestChainedLLMRequestsKeepTokenLine(t *testing.T) {
+	svcChan, broker, controls := startUpdater(t)
+
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.LLM}
+	waitForProgress(t, broker, func(pu ProgressUpdate) bool { return pu.Indeterminate })
+	controls.AddTokens("magnum-test", 40)
+	waitForProgress(t, broker, func(pu ProgressUpdate) bool { return pu.Description == "magnum-test: 40 tokens generated" })
+
+	// The response body closed; the next request arrives inside the grace
+	// window, so the slot goes WAIT and straight back to LLM.
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.WAIT, WaitType: servicequeue.LLM}
+	waitForProgress(t, broker, func(pu ProgressUpdate) bool { return !pu.Indeterminate })
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.LLM}
+	waitForProgress(t, broker, func(pu ProgressUpdate) bool { return pu.Indeterminate })
+
+	if pu := lastProgress(t, broker); pu.Description != "magnum-test: 40 tokens generated" {
+		t.Errorf("a chained request must not blank the token line, got %q", pu.Description)
+	}
+
+	// The count keeps accumulating over the whole chain rather than restarting.
+	controls.AddTokens("magnum-test", 60)
+	waitForProgress(t, broker, func(pu ProgressUpdate) bool { return pu.Description == "magnum-test: 100 tokens generated" })
 }
 
 // The token line is the task line, so the per-second ETA tick must not wipe
@@ -96,12 +143,8 @@ func TestTokenLineSurvivesTicks(t *testing.T) {
 
 	// Let a couple of ETA ticks pass; the task is still holding the slot.
 	time.Sleep(2100 * time.Millisecond)
-	pkt, ok := broker.State(events.PROGRESS_UPDATE).(events.Packet)
-	if !ok {
-		t.Fatal("no progress packet cached")
-	}
-	if pu, ok := pkt.Data.(ProgressUpdate); !ok || pu.Description != "magnum-test: 231 tokens generated" {
-		t.Errorf("expected the token line to survive the ETA ticks, got %+v", pkt.Data)
+	if pu := lastProgress(t, broker); pu.Description != "magnum-test: 231 tokens generated" {
+		t.Errorf("expected the token line to survive the ETA ticks, got %q", pu.Description)
 	}
 }
 

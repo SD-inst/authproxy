@@ -71,6 +71,42 @@
                     document.getElementById('description').innerText =
                         description.task || description.service;
                 }
+                // The bar width animates back to zero over 0.5s (style.css),
+                // while the server drops the task color the moment the task
+                // ends. Keep the color through that shrink and only then revert
+                // to the default, otherwise the bar turns neutral mid-animation.
+                const COLOR_HOLD_MS = 500;
+                let barColor = '';
+                let colorClearTimer = null;
+                function applyBarColor(color) {
+                    const bar = document.getElementById('progress');
+                    if (color) {
+                        bar.style.setProperty('--pc', color);
+                        bar.parentElement.classList.add('user-color');
+                    } else {
+                        bar.style.removeProperty('--pc');
+                        bar.parentElement.classList.remove('user-color');
+                    }
+                }
+                function setBarColor(color) {
+                    if (colorClearTimer) {
+                        clearTimeout(colorClearTimer);
+                        colorClearTimer = null;
+                    }
+                    if (color) {
+                        barColor = color;
+                        applyBarColor(barColor);
+                        return;
+                    }
+                    if (!barColor) {
+                        return;
+                    }
+                    colorClearTimer = setTimeout(() => {
+                        colorClearTimer = null;
+                        barColor = '';
+                        applyBarColor('');
+                    }, COLOR_HOLD_MS);
+                }
                 function updateTitle() {
                     const sq_str = progress.sq > 0 ? `[sq: ${progress.sq}] ` : ''
                     if (progress.progress > 0) {
@@ -116,13 +152,7 @@
                             document.getElementById('last_active').innerText =
                                 lastActive.toLocaleString();
                             document.getElementById('duration').innerText = data.duration;
-                            if (data.color) {
-                                bar.style.setProperty('--pc', data.color);
-                                bar.parentElement.classList.add('user-color');
-                            } else {
-                                bar.style.removeProperty('--pc');
-                                bar.parentElement.classList.remove('user-color');
-                            }
+                            setBarColor(data.color || '');
                             progress.progress = data.progress;
                             progress.eta = data.eta;
                             updateTitle();
