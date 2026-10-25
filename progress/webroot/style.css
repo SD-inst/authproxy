@@ -57,10 +57,51 @@
     }
 }
 
+/* A task with no progress fraction (an LLM generation: llama.cpp never says
+   how far it has got) is drawn as the classic indeterminate bar — filled
+   completely with marching diagonal stripes, so it reads as working rather
+   than hung. The stripes live on an overlay, so they compose with whatever
+   fill the bar has: the default blue or a user's color. */
+.animated-progress.indeterminate span {
+    width: 100%;
+}
+
+.animated-progress.indeterminate::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background-image: linear-gradient(
+        45deg,
+        rgba(255, 255, 255, 0.3) 25%,
+        rgba(255, 255, 255, 0) 25%,
+        rgba(255, 255, 255, 0) 50%,
+        rgba(255, 255, 255, 0.3) 50%,
+        rgba(255, 255, 255, 0.3) 75%,
+        rgba(255, 255, 255, 0) 75%,
+        rgba(255, 255, 255, 0)
+    );
+    background-size: 28px 28px;
+    animation: progress-stripes 0.9s linear infinite;
+}
+
+@keyframes progress-stripes {
+    from {
+        background-position: 28px 0;
+    }
+    to {
+        background-position: 0 0;
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .animated-progress.user-color span {
         animation: none;
         background-size: 100% 100%;
+    }
+
+    .animated-progress.indeterminate::after {
+        animation: none;
     }
 }
 

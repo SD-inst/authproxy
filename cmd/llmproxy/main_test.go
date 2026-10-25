@@ -1037,3 +1037,33 @@ func TestRewrittenAliasesShareSlot(t *testing.T) {
 		t.Errorf("C took too long: %v (grace %v)", ce.Sub(cs), grace)
 	}
 }
+
+// VIP matching hashes the key without the Authorization scheme: a digest
+// configured over the bare key matches a client sending "Bearer <key>", and a
+// digest configured over the header as sent (the legacy form) still matches.
+func TestVIPKeyMatchesBearerScheme(t *testing.T) {
+	oldKeys := vipKeys
+	defer func() { vipKeys = oldKeys }()
+
+	vipKeys = vipSet("sk-vip")
+	if !isVIPKey("sk-vip") {
+		t.Error("bare key must match its own digest")
+	}
+	if !isVIPKey("Bearer sk-vip") {
+		t.Error("the Bearer-prefixed header must match the bare key digest")
+	}
+	if !isVIPKey("bearer sk-vip") {
+		t.Error("the scheme is case-insensitive and must still match")
+	}
+	if isVIPKey("Bearer sk-other") {
+		t.Error("an unconfigured key must not match")
+	}
+	if isVIPKey("") {
+		t.Error("an empty header must not match")
+	}
+
+	vipKeys = vipSet("Bearer sk-legacy")
+	if !isVIPKey("Bearer sk-legacy") {
+		t.Error("a digest configured over the header as sent must still match")
+	}
+}

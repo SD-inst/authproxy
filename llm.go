@@ -19,6 +19,7 @@ import (
 	"github.com/donovanhide/eventsource"
 	"github.com/labstack/echo/v4"
 	"github.com/rkfg/authproxy/metrics"
+	"github.com/rkfg/authproxy/progress"
 	"github.com/rkfg/authproxy/proxy"
 	"github.com/rkfg/authproxy/servicequeue"
 )
@@ -29,8 +30,12 @@ type llmbalancer struct {
 	client        http.Client
 	sq            *servicequeue.ServiceQueue
 	metricUpdater chan<- metrics.MetricUpdate
-	apiKey        string
-	model         string
+	// controls reports the running LLM task to the /q status page (the bar
+	// color for the API key in use, and the generated-token count). It is the
+	// same interface the queue join handlers use; nil disables the reporting.
+	controls progress.QueueControls
+	apiKey   string
+	model    string
 }
 
 // VIP slots for the LLM service. Keys are stored as SHA-256 hashes parsed from
@@ -85,12 +90,16 @@ func parseVipKeys(s string) map[[32]byte]bool {
 }
 
 // isVIPKey reports whether the API key is a configured VIP key, matched by its
-// SHA-256 hash against vipKeys.
-func isVIPKey(key string) bool {
-	if key == "" {
-		return false
+// SHA-256 hash against vipKeys. The argument is the Authorization header value:
+// both the bare key (the documented form, "Bearer " scheme stripped) and the
+// header as the client sent it are hashed, so a digest of either matches.
+func isVIPKey(authorization string) bool {
+	for _, variant := range apiKeyVariants(authorization) {
+		if vipKeys[sha256.Sum256([]byte(variant))] {
+			return true
+		}
 	}
-	return vipKeys[sha256.Sum256([]byte(key))]
+	return false
 }
 
 // llmGraceDelay returns the hold time to apply after the last LLM request body
@@ -113,8 +122,8 @@ func isLLMPath(path string) bool {
 		strings.HasSuffix(path, "/v1/internal/encode") || strings.HasSuffix(path, "/v1/embeddings") || strings.HasPrefix(path, "/upstream/")) && !strings.HasSuffix(path, ".js")
 }
 
-func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdater chan<- metrics.MetricUpdate) *llmbalancer {
-	result := llmbalancer{sq: sq, target: target, metricUpdater: metricUpdater}
+func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdater chan<- metrics.MetricUpdate, controls progress.QueueControls) *llmbalancer {
+	result := llmbalancer{sq: sq, target: target, metricUpdater: metricUpdater, controls: controls}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
 		Before: func(c echo.Context) {
 			log.Printf("LLM Req: %s %s", c.Request().Method, c.Request().URL.String())
@@ -127,6 +136,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 				log.Printf("Error converting request images: %s", err)
 				// Don't fail the request, just log the error
 			}
+			apiKey := c.Request().Header.Get("Authorization")
 			sq.Lock()
 			defer sq.Unlock()
 			log.Print("LLM sq locked, waiting...")
@@ -134,7 +144,6 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 			// only allow call chaining with POST methods
 			if c.Request().Method == "POST" {
 				// this can proceed if the service is either NONE or WAIT/LLM and the API apiKey matches (allow consequent requests from the same user to go uninterrupted)
-				apiKey := c.Request().Header.Get("Authorization")
 				prevKey := result.apiKey
 				prevModel := result.model
 				body, err := io.ReadAll(c.Request().Body)
@@ -175,6 +184,13 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 				result.model = model
 			} else {
 				sq.Await(servicequeue.LLM, false)
+			}
+			// Attribute the status page (/q) progress bar to the API key
+			// holding the slot. LLM clients authenticate with a key instead of
+			// a JWT, so the color mapping is keyed by the key's digest; the key
+			// itself never reaches the page.
+			if result.controls != nil {
+				result.controls.SetTaskColor(llmKeyColor(apiKey))
 			}
 			sq.Hold()
 			sq.CancelCleanup() // cancel potential WAIT/LLM cleanup
@@ -288,6 +304,13 @@ func (l *llmbalancer) startMetricCollection() {
 				if ts.After(cutoff) {
 					log.Printf("Tokens generated: %d", m.Tokens.OutputTokens)
 					l.metricUpdater <- metrics.MetricUpdate{Type: metrics.LLM_TOKENS, Value: float64(m.Tokens.OutputTokens)}
+					// The same count goes to the status page, together with the
+					// model that produced it: an LLM task has no progress
+					// percentage, so the "model: N tokens generated" line is
+					// what shows the task is running rather than hung.
+					if l.controls != nil {
+						l.controls.AddTokens(m.Model, m.Tokens.OutputTokens)
+					}
 				}
 			}
 			lastID = evt.ID

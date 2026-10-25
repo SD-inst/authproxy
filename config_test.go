@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 )
@@ -83,5 +86,62 @@ func TestTaskColor(t *testing.T) {
 	}
 	if got := taskColor(""); got != "" {
 		t.Fatalf("expected no color for an empty owner, got %q", got)
+	}
+}
+
+// keyDigestHex is the digest form an llm_key_colors entry is written in.
+func keyDigestHex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestLLMKeyColor(t *testing.T) {
+	oldColors := config.LLMKeyColors
+	defer func() {
+		config.LLMKeyColors = oldColors
+		config.buildKeyColors()
+	}()
+
+	config.LLMKeyColors = map[string][]string{
+		// Digests are matched case-insensitively.
+		"#a855f7": {strings.ToUpper(keyDigestHex("sk-carol"))},
+		// Configured over the header as the client sends it, scheme included.
+		"#22c55e": {keyDigestHex("Bearer sk-dave")},
+		"#12345":  {keyDigestHex("sk-badcolor")}, // invalid color form
+		"#f43f5e": {"sk-not-a-digest", "  "},     // malformed entries
+		"#00ff00": {keyDigestHex("sk-alice")},
+		"#ff7a1a": {keyDigestHex("sk-alice")}, // duplicate: first color wins
+	}
+	config.buildKeyColors()
+
+	// The documented form: the bare key, with or without the "Bearer " scheme.
+	if got := llmKeyColor("sk-carol"); got != "#a855f7" {
+		t.Fatalf("expected sk-carol -> #a855f7, got %q", got)
+	}
+	if got := llmKeyColor("Bearer sk-carol"); got != "#a855f7" {
+		t.Fatalf("expected the Bearer-prefixed form to match, got %q", got)
+	}
+	// A digest configured over the header as sent (scheme included) matches.
+	if got := llmKeyColor("Bearer sk-dave"); got != "#22c55e" {
+		t.Fatalf("expected the header-form digest to match, got %q", got)
+	}
+	// A key listed under several colors keeps the alphabetically first one.
+	if got := llmKeyColor("sk-alice"); got != "#00ff00" {
+		t.Fatalf("expected the alphabetically first color, got %q", got)
+	}
+	// An invalid color form gives its keys no color.
+	if got := llmKeyColor("sk-badcolor"); got != "" {
+		t.Fatalf("expected no color for an invalid color entry, got %q", got)
+	}
+	// A malformed config entry matches nothing (the raw key is not an identity).
+	if got := llmKeyColor("sk-not-a-digest"); got != "" {
+		t.Fatalf("expected no color for a malformed digest entry, got %q", got)
+	}
+	// Unconfigured and empty keys get the default (no color).
+	if got := llmKeyColor("sk-nobody"); got != "" {
+		t.Fatalf("expected no color for an unconfigured key, got %q", got)
+	}
+	if got := llmKeyColor(""); got != "" {
+		t.Fatalf("expected no color for an empty header, got %q", got)
 	}
 }

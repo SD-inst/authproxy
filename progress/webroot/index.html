@@ -61,6 +61,16 @@
                     sq: 0,
                     eta: '',
                 };
+                // Two description levels: the live task line from the progress
+                // packets ("rendering 12/20 steps", "magnum-v4-12b: 231 tokens
+                // generated") and the persistent service description (the model
+                // name). The task line wins while it is set; the backend
+                // applies the same precedence in status.json.
+                let description = { task: '', service: '' };
+                function renderDescription() {
+                    document.getElementById('description').innerText =
+                        description.task || description.service;
+                }
                 function updateTitle() {
                     const sq_str = progress.sq > 0 ? `[sq: ${progress.sq}] ` : ''
                     if (progress.progress > 0) {
@@ -85,23 +95,27 @@
                         case 'progress':
                             document.getElementById('tasks').innerText =
                                 '' + (data.current < 0 ? 'preparing...' : data.current) + (data.queued ? ` [${data.queued} queued]` : '');
-                            document
-                                .getElementById('progress')
-                                .style.setProperty(
-                                    'width',
-                                    (data.progress * 100).toFixed(2) + '%'
-                                );
+                            const bar = document.getElementById('progress');
+                            // An indeterminate task (an LLM generation reports
+                            // no percentage) is drawn as a full bar with
+                            // animated diagonal stripes.
+                            const indeterminate = !!data.indeterminate;
+                            bar.style.setProperty(
+                                'width',
+                                ((indeterminate ? 1 : data.progress) * 100).toFixed(2) + '%'
+                            );
+                            bar.parentElement.classList.toggle(
+                                'indeterminate',
+                                indeterminate
+                            );
                             document.getElementById('eta').innerText =
                                 data.eta;
-                            if (data.description) {
-                                document.getElementById('description').innerText =
-                                    data.description;
-                            }
+                            description.task = data.description || '';
+                            renderDescription();
                             const lastActive = new Date(data.last_active);
                             document.getElementById('last_active').innerText =
                                 lastActive.toLocaleString();
                             document.getElementById('duration').innerText = data.duration;
-                            const bar = document.getElementById('progress');
                             if (data.color) {
                                 bar.style.setProperty('--pc', data.color);
                                 bar.parentElement.classList.add('user-color');
@@ -144,8 +158,9 @@
                             const service = prevService ? `${curService} ⇐ ${prevService}` : curService;
                             document.getElementById('service').innerText = service + (serviceQueue ? ` [queue: ${serviceQueue}]` : '');
                             if (data.description) {
-                                document.getElementById('description').innerText = data.description;
+                                description.service = data.description;
                             }
+                            renderDescription();
                             document.getElementById('last_active').innerText =
                                 new Date(data.last_active).toLocaleString();
                     }

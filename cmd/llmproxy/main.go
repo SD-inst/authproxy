@@ -109,13 +109,39 @@ func parseModelRewrites(s string) map[string]string {
 	return m
 }
 
-// isVIPKey reports whether the API key is a configured VIP key, matched by its
-// SHA-256 hash against vipKeys.
-func isVIPKey(key string) bool {
-	if key == "" {
-		return false
+// apiKeyVariants returns the forms of an Authorization header value a key can
+// be configured by: the bare key (the documented form — the optional "Bearer "
+// scheme is stripped) and, when the header carried a scheme, the header value
+// as the client sent it. An empty header has no variants.
+func apiKeyVariants(header string) []string {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return nil
 	}
-	return vipKeys[sha256.Sum256([]byte(key))]
+	bare := header
+	// The scheme is not part of the key (HTTP auth schemes are case-insensitive),
+	// so the bare key is a variant of its own.
+	if scheme, rest, ok := strings.Cut(header, " "); ok && strings.EqualFold(scheme, "Bearer") {
+		bare = strings.TrimSpace(rest)
+	}
+	variants := []string{bare}
+	if bare != header {
+		variants = append(variants, header)
+	}
+	return variants
+}
+
+// isVIPKey reports whether the API key is a configured VIP key, matched by its
+// SHA-256 hash against vipKeys. The argument is the Authorization header value:
+// both the bare key (the documented form, "Bearer " scheme stripped) and the
+// header as the client sent it are hashed, so a digest of either matches.
+func isVIPKey(authorization string) bool {
+	for _, variant := range apiKeyVariants(authorization) {
+		if vipKeys[sha256.Sum256([]byte(variant))] {
+			return true
+		}
+	}
+	return false
 }
 
 // llmProxy holds the shared state. apiKey/model are guarded by the ServiceQueue

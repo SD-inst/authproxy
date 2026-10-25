@@ -327,7 +327,7 @@ func main() {
 	addSDQueueHandlers(e, sq, pr)
 	addASQueueHandlers(e, sq, pr)
 	if llmurl.Scheme != "" {
-		llm := NewLLMBalancer(llmurl, sq, mchan)
+		llm := NewLLMBalancer(llmurl, sq, mchan, pr)
 		// The LLM container is tracked like the others and is woken by a request
 		// when it is down, but it is never stopped for idleness: llama-swap does
 		// its own model swapping and staying loaded is the point. Only an
