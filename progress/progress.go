@@ -33,9 +33,10 @@ type ProgressUpdate struct {
 	Description  string    `json:"description"`
 	LastActive   time.Time `json:"last_active"`
 	TaskDuration string    `json:"duration"`
-	// Color is the display color configured for the user that queued the
-	// current task ("" = the page default). The username itself stays
-	// server-side; the color is what makes a non-default user visible.
+	// Color is the display color configured for the user that queued the most
+	// recent task ("" = the page default). It lingers after the task ends until
+	// another task replaces it. The username itself stays server-side; the
+	// color is what makes a non-default user visible.
 	Color string `json:"color"`
 	// Indeterminate is true while the LLM holds the slot: a generation has no
 	// progress fraction (llama.cpp never reports how far it has got), so the
@@ -123,7 +124,8 @@ func NewProgress(broker *events.Broker, sdhost string, timeout int, wd *watchdog
 // SetTaskColor applies the display color of the user who queued the task
 // currently holding the service slot ("" = the page default). The color is
 // applied asynchronously by the updater and broadcast with the next progress
-// packet. Non-blocking: the latest call wins under a race.
+// packet. It lingers after the task ends and is replaced only by the next
+// task's color. Non-blocking: the latest call wins under a race.
 func (p *progress) SetTaskColor(color string) {
 	select {
 	case p.colorChan <- color:
@@ -193,9 +195,11 @@ func (p *progress) updater() {
 	lastJobCount := 0
 	lastQueue := 0
 	lastProg := float64(0)
-	// curColor is the display color of the user holding the slot (set via
-	// SetTaskColor from the join/job_start handlers). Cleared when the slot
-	// is freed. The username itself is never broadcast.
+	// curColor is the display color of the user whose task last held the slot
+	// (set via SetTaskColor from the join/job_start handlers). Like the task
+	// line it outlives the task: it is replaced by the next task's color (which
+	// is the default "" for a user without a configured one), never cleared
+	// when the slot is freed. The username itself is never broadcast.
 	curColor := ""
 	// curSvc is the service currently holding the slot (NONE/WAIT = nobody).
 	// It drives the LLM's indeterminate bar (a generation reports no progress
@@ -384,11 +388,11 @@ func (p *progress) updater() {
 			jobStart = time.Time{}
 			jobActive = false
 			lastJobCount = 0
-			curColor = ""
-			// The task line is kept: it is the record of what the task just did
-			// (the generated-token count of the last LLM generation, the last
-			// step count), and it is replaced when the next task starts. Wiping
-			// it here made the count vanish the moment the generation ended.
+			// The task line and the color are kept: they record what the task
+			// just did (the generated-token count of the last LLM generation,
+			// the last step count) and whose it was, and the next task replaces
+			// both. Clearing them here made the count and the bar color vanish
+			// the moment the generation ended.
 			broadcast()
 		case svc := <-p.startJob:
 			// Service transitioned from NONE/WAIT to an active service:

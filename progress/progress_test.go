@@ -86,20 +86,27 @@ func TestLLMTaskVisibleWithoutProgressReports(t *testing.T) {
 		t.Errorf("expected the configured key color in the packet, got %q", pu.Color)
 	}
 
-	// The slot is freed: no active task, no indeterminate bar, no color. The
-	// token line survives: it is the record of what the task just generated,
-	// and wiping it here is what made the count vanish as soon as the
-	// generation ended.
+	// The slot is freed: no active task, no indeterminate bar. The token line
+	// and the color survive: they record the task that just ran, and only the
+	// next task replaces them.
 	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.WAIT, WaitType: servicequeue.LLM}
 	pu = waitForProgress(t, broker, func(pu ProgressUpdate) bool {
 		return !pu.Indeterminate && pu.Current == 0
 	})
-	if pu.Color != "" {
-		t.Errorf("expected the color to clear with the slot, got %q", pu.Color)
+	if pu.Color != "#22c55e" {
+		t.Errorf("expected the task color to outlive the slot, got %q", pu.Color)
 	}
 	if pu.Description != "magnum-test: 100 tokens generated" {
 		t.Errorf("expected the token line to survive the task end, got %q", pu.Description)
 	}
+
+	// Another user's task replaces both: their color (the default "" for a user
+	// with no configured one) and their own task line.
+	controls.SetTaskColor("")
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.SD, Description: "preparing..."}
+	waitForProgress(t, broker, func(pu ProgressUpdate) bool {
+		return pu.Current == 1 && pu.Color == "" && pu.Description == ""
+	})
 }
 
 // An agent fires requests back to back, so the slot only drops to WAIT between

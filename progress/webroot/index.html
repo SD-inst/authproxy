@@ -71,14 +71,11 @@
                     document.getElementById('description').innerText =
                         description.task || description.service;
                 }
-                // The bar width animates back to zero over 0.5s (style.css),
-                // while the server drops the task color the moment the task
-                // ends. Keep the color through that shrink and only then revert
-                // to the default, otherwise the bar turns neutral mid-animation.
-                const COLOR_HOLD_MS = 500;
-                let barColor = '';
-                let colorClearTimer = null;
-                function applyBarColor(color) {
+                // The bar color belongs to the task that last ran: the server
+                // keeps it after the task ends and replaces it only when the
+                // next task starts, so the width animation back to zero keeps
+                // the color all the way down.
+                function setBarColor(color) {
                     const bar = document.getElementById('progress');
                     if (color) {
                         bar.style.setProperty('--pc', color);
@@ -87,25 +84,6 @@
                         bar.style.removeProperty('--pc');
                         bar.parentElement.classList.remove('user-color');
                     }
-                }
-                function setBarColor(color) {
-                    if (colorClearTimer) {
-                        clearTimeout(colorClearTimer);
-                        colorClearTimer = null;
-                    }
-                    if (color) {
-                        barColor = color;
-                        applyBarColor(barColor);
-                        return;
-                    }
-                    if (!barColor) {
-                        return;
-                    }
-                    colorClearTimer = setTimeout(() => {
-                        colorClearTimer = null;
-                        barColor = '';
-                        applyBarColor('');
-                    }, COLOR_HOLD_MS);
                 }
                 function updateTitle() {
                     const sq_str = progress.sq > 0 ? `[sq: ${progress.sq}] ` : ''
