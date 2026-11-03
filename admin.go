@@ -57,9 +57,10 @@ func addAdminHandlers(e *echo.Echo, m *containerManager) {
 	})
 }
 
-// handleContainerStatus reports which containers the manager believes are
-// running. This is the manager's own view — the one auto start/stop acts on —
-// not a probe of Docker.
+// handleContainerStatus reports the state the manager tracks for every managed
+// container. It is the view the auto start/stop acts on — adopted from the
+// control endpoint and updated by every op — and it is served from published
+// snapshots, so it answers promptly even while a start is still in flight.
 func (m *containerManager) handleContainerStatus(c echo.Context) error {
 	return c.JSON(http.StatusOK, m.status())
 }

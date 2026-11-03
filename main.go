@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"log"
@@ -230,6 +231,10 @@ func main() {
 	} else {
 		log.Printf("Watchdog disabled (--watchdog not set): container auto start/stop and restart-on-demand are OFF")
 	}
+	// Adopt the containers that are already up before the first request is
+	// served: authproxy restarts on its own much more often than the containers
+	// do, and a container it does not know about never gets an idle timer.
+	m.startReconciler(context.Background())
 	addAdminHandlers(e, m)
 	svcChan := make(chan servicequeue.SvcUpdate)
 	sq := servicequeue.NewServiceQueue(svcChan)

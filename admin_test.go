@@ -109,6 +109,12 @@ func TestAdminStatusEndpoint(t *testing.T) {
 	if len(s.Services) != len(managedServices) {
 		t.Fatalf("got %d services, want %d", len(s.Services), len(managedServices))
 	}
+	// The page renders svc.state, so the wire format must carry it.
+	for _, want := range []string{`"state":"stopped"`, `"running":false`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("the status JSON must contain %s: %s", want, rec.Body.String())
+		}
+	}
 	if woken != 0 {
 		t.Fatal("the status endpoint must not reach the domain proxy")
 	}

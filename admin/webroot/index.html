@@ -19,6 +19,7 @@
         --btn-line: #d1d5db;
         --accent: #0060df;
         --running: #047857;
+        --bad: #b91c1c;
         --banner-bg: #fef3c7;
         --banner-line: #fcd34d;
         --error-bg: #fee2e2;
@@ -35,6 +36,7 @@
             --btn-line: #4b5563;
             --accent: #60a5fa;
             --running: #34d399;
+            --bad: #f87171;
             --banner-bg: #33290f;
             --banner-line: #6b5320;
             --error-bg: #351515;
@@ -114,8 +116,20 @@
         color: var(--running);
     }
 
+    .state.starting {
+        color: var(--accent);
+    }
+
+    .state.bad {
+        color: var(--bad);
+    }
+
     .state.off {
         color: var(--muted);
+    }
+
+    .stale {
+        color: var(--bad);
     }
 
     .banner, .error {
@@ -156,10 +170,11 @@
 </head>
 <body>
 <h1>Containers</h1>
-<p class="note">The state below is what authproxy itself tracks: containers it starts on demand. Anything started outside authproxy is not listed here. A container with auto-stop off stays up until it is stopped here.</p>
+<p class="note">The state below is what authproxy tracks, re-checked against the watchdog every 30 seconds: a container started outside authproxy is listed too and is still stopped when it goes idle. A container with auto-stop off stays up until it is stopped here.</p>
 
 <div id="banner" class="banner hidden"></div>
 <div id="error" class="error hidden"></div>
+<p id="stale" class="note stale hidden"></p>
 
 <table>
     <thead>
@@ -184,8 +199,13 @@
     const rows = document.getElementById('rows');
     const banner = document.getElementById('banner');
     const errorBox = document.getElementById('error');
+    const stale = document.getElementById('stale');
     const updated = document.getElementById('updated');
     const refreshBtn = document.getElementById('refresh');
+
+    // The state word from the server is also the label; only its colour is
+    // chosen here, so an unknown state still shows up instead of disappearing.
+    const STATE_CLASS = {running: 'on', starting: 'starting', unhealthy: 'bad', stopped: 'off'};
 
     // busy serializes the page: while a control request is running (a start
     // waits for the container to become healthy, which can take a minute), no
@@ -220,6 +240,15 @@
             banner.classList.remove('hidden');
         }
 
+        // A failed status check leaves the states at the last thing known, which
+        // is worth saying out loud rather than presenting as current fact.
+        if (status.reconcile_error) {
+            stale.textContent = 'The watchdog did not answer the status check (' + status.reconcile_error + '), so the states below may be out of date.';
+            stale.classList.remove('hidden');
+        } else {
+            stale.classList.add('hidden');
+        }
+
         rows.textContent = '';
         for (const svc of status.services) {
             const tr = document.createElement('tr');
@@ -229,8 +258,8 @@
             tr.appendChild(name);
 
             const state = document.createElement('td');
-            state.className = 'state ' + (svc.running ? 'on' : 'off');
-            state.textContent = svc.running ? 'running' : 'stopped';
+            state.className = 'state ' + (STATE_CLASS[svc.state] || 'off');
+            state.textContent = svc.state || 'unknown';
             tr.appendChild(state);
 
             const last = document.createElement('td');
@@ -260,7 +289,8 @@
 
             rows.appendChild(tr);
         }
-        updated.textContent = 'updated ' + new Date().toLocaleTimeString();
+        updated.textContent = 'updated ' + new Date().toLocaleTimeString() +
+            (status.reconciled_at ? ' · checked with the watchdog ' + new Date(status.reconciled_at).toLocaleTimeString() : '');
     }
 
     async function fetchStatus() {
