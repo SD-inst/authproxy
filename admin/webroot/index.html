@@ -207,12 +207,21 @@
     // chosen here, so an unknown state still shows up instead of disappearing.
     const STATE_CLASS = {running: 'on', starting: 'starting', unhealthy: 'bad', stopped: 'off'};
 
-    // busy serializes the page: while a control request is running (a start
-    // waits for the container to become healthy, which can take a minute), no
-    // other action and no auto refresh is issued.
-    let busy = false;
+    // A control request is issued in the background: a start waits until the
+    // container is healthy, which can take minutes. It must not freeze the page —
+    // the status poll keeps running (the server marks the service starting), and
+    // only the buttons of the service being acted on are held, so another
+    // container can still be stopped while one is stuck starting.
+    const pending = new Map(); // service -> the op in flight for it
 
-    function setError(message) {
+    // Two independent reasons the box can show: the list could not be loaded, and
+    // the last control request failed. The op failure must outlive the polls —
+    // otherwise the reason a start failed is wiped four seconds later.
+    let loadError = '';
+    let opError = '';
+
+    function showError() {
+        const message = opError || loadError;
         if (!message) {
             errorBox.classList.add('hidden');
             errorBox.textContent = '';
@@ -222,11 +231,29 @@
         errorBox.classList.remove('hidden');
     }
 
-    function setBusy(state) {
-        busy = state;
-        for (const button of document.querySelectorAll('button')) {
-            button.disabled = state;
+    // styleButton marks the buttons of a service with an op in flight, so the
+    // operator sees which one is held and why.
+    function styleButton(button, service, op) {
+        const inFlight = pending.get(service);
+        button.disabled = inFlight !== undefined;
+        button.textContent = inFlight === op ? op + '…' : op;
+    }
+
+    // refreshButtons re-applies the pending state to the buttons currently shown,
+    // without waiting for the next status poll.
+    function refreshButtons() {
+        for (const button of rows.querySelectorAll('button')) {
+            styleButton(button, button.dataset.service, button.dataset.op);
         }
+    }
+
+    function setPending(service, op) {
+        if (op) {
+            pending.set(service, op);
+        } else {
+            pending.delete(service);
+        }
+        refreshButtons();
     }
 
     function render(status) {
@@ -281,7 +308,9 @@
             actions.className = 'actions';
             for (const op of ['start', 'stop', 'restart']) {
                 const button = document.createElement('button');
-                button.textContent = op;
+                button.dataset.service = svc.service;
+                button.dataset.op = op;
+                styleButton(button, svc.service, op);
                 button.onclick = () => control(svc.service, op);
                 actions.appendChild(button);
             }
@@ -293,20 +322,30 @@
             (status.reconciled_at ? ' · checked with the watchdog ' + new Date(status.reconciled_at).toLocaleTimeString() : '');
     }
 
+    // Only one status request is in flight at a time; an op being pending does
+    // not stop the polling, it is what shows the op working.
+    let polling = false;
+
     async function fetchStatus() {
-        if (busy) {
+        if (polling) {
             return;
         }
+        polling = true;
         try {
             const response = await fetch('/admin/containers', {headers: {'Accept': 'application/json'}});
             if (!response.ok) {
-                setError('Cannot load the container list: HTTP ' + response.status);
+                loadError = 'Cannot load the container list: HTTP ' + response.status;
+                showError();
                 return;
             }
-            setError('');
+            loadError = '';
             render(await response.json());
+            showError();
         } catch (e) {
-            setError('Cannot load the container list: ' + e);
+            loadError = 'Cannot load the container list: ' + e;
+            showError();
+        } finally {
+            polling = false;
         }
     }
 
@@ -321,11 +360,17 @@
     }
 
     async function control(service, op) {
-        if (busy || !confirm(confirmText(service, op))) {
+        if (pending.has(service) || !confirm(confirmText(service, op))) {
             return;
         }
-        setBusy(true);
-        setError('');
+        setPending(service, op);
+        opError = '';
+        showError();
+        // The reply is only interesting when the op failed: the status poll
+        // already shows what the server is doing, and it keeps running while this
+        // request waits. Poll once right away so the change is visible without
+        // waiting for the next tick.
+        fetchStatus();
         try {
             const response = await fetch('/admin/container', {
                 method: 'POST',
@@ -334,14 +379,14 @@
             });
             const body = await response.json().catch(() => ({}));
             if (!response.ok) {
-                setError(op + ' ' + service + ' failed: ' + (body.message || 'HTTP ' + response.status));
-            } else {
-                render(body);
+                opError = op + ' ' + service + ' failed: ' + (body.message || 'HTTP ' + response.status);
             }
         } catch (e) {
-            setError(op + ' ' + service + ' failed: ' + e);
+            opError = op + ' ' + service + ' failed: ' + e;
         } finally {
-            setBusy(false);
+            showError();
+            setPending(service, null);
+            fetchStatus();
         }
     }
 
