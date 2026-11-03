@@ -333,6 +333,13 @@ func main() {
 	addASQueueHandlers(e, sq, pr)
 	if llmurl.Scheme != "" {
 		llm := NewLLMBalancer(llmurl, sq, mchan, pr)
+		// The GPU slot is treated as last held by llama-swap: its container is
+		// never stopped for idleness and it can be carrying a model that was
+		// loaded before authproxy started, so the first request for another GPU
+		// service must unload it — nothing else would, and the two models
+		// together OOM. A1111 loads its checkpoint only when a client joins, so
+		// there is nothing resident on its behalf to unload.
+		sq.CF = llm.startupCleanup()
 		// The LLM container is tracked like the others and is woken by a request
 		// when it is down, but it is never stopped for idleness: llama-swap does
 		// its own model swapping and staying loaded is the point. Only an

@@ -122,6 +122,45 @@ func isLLMPath(path string) bool {
 		strings.HasSuffix(path, "/v1/internal/encode") || strings.HasSuffix(path, "/v1/embeddings") || strings.HasPrefix(path, "/upstream/")) && !strings.HasSuffix(path, ".js")
 }
 
+// llmUnloadTimeout bounds the unload call. It runs inside a queue handover and
+// under the queue lock, so a llama-swap that is down or unreachable must not
+// hold every other service behind it.
+const llmUnloadTimeout = 10 * time.Second
+
+// unloadModel asks llama-swap to drop the model it holds, freeing VRAM for the
+// service taking the slot. The failure is logged, not returned: the caller is a
+// handover that has to proceed whatever llama-swap says.
+func (b *llmbalancer) unloadModel() {
+	ctx, cancel := context.WithTimeout(context.Background(), llmUnloadTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.target.JoinPath("/unload").String(), nil)
+	if err != nil {
+		log.Printf("LLM unload: %s", err)
+		return
+	}
+	resp, err := b.client.Do(req)
+	if err != nil {
+		log.Printf("LLM unload: %s", err)
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	// A wrong path answers 404 without any transport error, which would otherwise
+	// look like a successful unload.
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		log.Printf("LLM unload: %s returned %s", req.URL, resp.Status)
+	}
+}
+
+// startupCleanup is the cleanup armed when authproxy starts, as though
+// llama-swap had been the last service to hold the GPU slot. Its container is
+// never stopped for idleness and it keeps whatever model it loaded — including
+// one loaded while authproxy was down — so without this the first request for
+// another GPU service runs with both models resident and OOMs.
+func (b *llmbalancer) startupCleanup() *servicequeue.CleanupFunc {
+	return &servicequeue.CleanupFunc{F: b.unloadModel, Service: servicequeue.LLM}
+}
+
 func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdater chan<- metrics.MetricUpdate, controls progress.QueueControls) *llmbalancer {
 	result := llmbalancer{sq: sq, target: target, metricUpdater: metricUpdater, controls: controls}
 	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
@@ -195,9 +234,7 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 			sq.Hold()
 			sq.CancelCleanup() // cancel potential WAIT/LLM cleanup
 			sq.CF = &servicequeue.CleanupFunc{
-				F: func() {
-					result.client.Get(result.target.JoinPath("/unload").String())
-				},
+				F:       result.unloadModel,
 				Service: servicequeue.LLM,
 			}
 		},

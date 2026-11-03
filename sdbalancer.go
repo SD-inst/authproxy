@@ -15,7 +15,6 @@ func addSDQueueHandlers(e *echo.Echo, sq *servicequeue.ServiceQueue, pr progress
 		},
 		Service: servicequeue.SD,
 	}
-	sq.CF = cleanupFunc // SD is supposed to be active by default
 	e.POST("/internal/join", func(c echo.Context) error {
 		user := authUser(c) // the Gradio page sends the sdkey cookie
 		sq.Lock()
