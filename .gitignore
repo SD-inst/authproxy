@@ -1,0 +1,31 @@
+# Compiled binaries. go build writes a binary named after its package next to
+# the sources, and the ones built by hand land at the repo root.
+/authproxy
+/llmproxy
+/copypv
+/civitaimetadl
+/cmd/llmproxy/llmproxy
+/cmd/civitaimetadl/civitaimetadl
+/cmd/copypv/copypv
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Archives parked in the tree.
+/civitaimetadl.zip
+
+# Runtime state and secrets. auth.yml is the live config (auth.yml.example is
+# the tracked template), users.txt the accounts, acl.txt the ACL, cookie.txt the
+# cookie jar the watchdog logs into.
+/auth.yml
+/users.txt
+/acl.txt
+/cookie.txt
+
+# Scratch space: the kilo agent workspace, and the site text dumps (FAQ, LLM
+# docs, screenshots) that live outside the repo.
+/.kilo/
+/docs/
