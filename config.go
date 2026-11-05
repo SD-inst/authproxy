@@ -67,7 +67,30 @@ type Config struct {
 	// of the bare key and a digest of the header as the client sends it both
 	// match. Keys without an entry get the default solid blue.
 	LLMKeyColors map[string][]string `yaml:"llm_key_colors" description:"Status page progress bar colors by LLM API key: hex color (#rgb/#rrggbb) -> list of SHA-256 key digests"`
+	// LLMVIPKeys are the LLM API keys allowed to keep the service slot after
+	// their last request. Like llm_key_colors they are listed as SHA-256
+	// digests (64 hex digits), never as the keys themselves. Only these keys
+	// hold: the queue stays WAIT/LLM for llm_vip_grace_period so the VIP's next
+	// request finds the model loaded and the slot still its, and everything
+	// else — another model, another GPU service — stays queued that long. Any
+	// other request frees the slot the moment its response body closes. An
+	// empty list (the default) means nothing is held between requests.
+	LLMVIPKeys []string `yaml:"llm_vip_keys" description:"SHA-256 digests of the LLM API keys allowed to hold the service slot between requests"`
+	// LLMVIPGracePeriod is how long that hold lasts (Go duration, e.g. "30s").
+	// Only meaningful with a non-empty llm_vip_keys; 0 disables the hold.
+	LLMVIPGracePeriod string `yaml:"llm_vip_grace_period" description:"How long a VIP LLM key holds the service slot after its last request (Go duration, default '10s')"`
 }
+
+// defaultVIPGracePeriod is the hold used when llm_vip_grace_period is unset or
+// malformed.
+const defaultVIPGracePeriod = 10 * time.Second
+
+// vipKeys is the inverted llm_vip_keys set (SHA-256 digest of the key -> VIP),
+// rebuilt by loadConfig. Empty means no key gets the between-request hold.
+var vipKeys = map[[32]byte]bool{}
+
+// vipGracePeriod is the resolved llm_vip_grace_period, rebuilt by loadConfig.
+var vipGracePeriod = defaultVIPGracePeriod
 
 // userColors is the inverted TaskColors map (username -> color), rebuilt by
 // loadConfig. Kept lowercase-keyed because credential usernames are.
@@ -96,6 +119,7 @@ func loadConfig(filename string) error {
 	}
 	config.buildUserColors()
 	config.buildKeyColors()
+	config.buildVipKeys()
 	return nil
 }
 
@@ -103,8 +127,9 @@ func loadConfig(filename string) error {
 // allowed so the value can be embedded into page CSS without escaping.
 var cssHexColorRE = regexp.MustCompile(`^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$`)
 
-// keyDigestRE matches a 64-hex-digit SHA-256 digest, the form an llm_key_colors
-// entry must be in (the raw key never goes into the config file).
+// keyDigestRE matches a 64-hex-digit SHA-256 digest, the form a key identity is
+// written in (llm_key_colors and llm_vip_keys entries); the raw key never goes
+// into the config file.
 var keyDigestRE = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
 // sortedColors returns the keys of a color -> list mapping in sorted order, so
@@ -170,6 +195,45 @@ func (c *Config) buildKeyColors() {
 			}
 			keyColors[digest] = color
 		}
+	}
+}
+
+// buildVipKeys rebuilds vipKeys from LLMVIPKeys (SHA-256 digests, matched
+// case-insensitively like llm_key_colors) and vipGracePeriod from
+// LLMVIPGracePeriod. A malformed digest is skipped with a log line; an unset or
+// unparseable grace period falls back to defaultVIPGracePeriod. A negative
+// period is rejected the same way — a hold cannot run backwards.
+func (c *Config) buildVipKeys() {
+	vipKeys = map[[32]byte]bool{}
+	for _, digest := range c.LLMVIPKeys {
+		digest = strings.ToLower(strings.TrimSpace(digest))
+		if digest == "" {
+			continue
+		}
+		if !keyDigestRE.MatchString(digest) {
+			log.Printf("llm_vip_keys: ignoring invalid key digest %q (want 64-hex-digit SHA-256)", digest)
+			continue
+		}
+		sum, err := hex.DecodeString(digest)
+		if err != nil {
+			// Unreachable: keyDigestRE has just checked the form.
+			continue
+		}
+		var k [32]byte
+		copy(k[:], sum)
+		vipKeys[k] = true
+	}
+	vipGracePeriod = defaultVIPGracePeriod
+	if s := strings.TrimSpace(c.LLMVIPGracePeriod); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil || d < 0 {
+			log.Printf("llm_vip_grace_period: ignoring %q (want a Go duration, e.g. \"30s\"), using %s", s, defaultVIPGracePeriod)
+		} else {
+			vipGracePeriod = d
+		}
+	}
+	if len(vipKeys) > 0 {
+		log.Printf("llm_vip_keys: %d VIP key(s), holding the slot %s after the last request", len(vipKeys), vipGracePeriod)
 	}
 }
 

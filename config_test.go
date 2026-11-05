@@ -89,7 +89,66 @@ func TestTaskColor(t *testing.T) {
 	}
 }
 
-// keyDigestHex is the digest form an llm_key_colors entry is written in.
+// VIP keys are configured as digests too, and they decide who may hold the
+// service slot between requests, so a malformed entry must match nothing.
+func TestLLMVIPKeys(t *testing.T) {
+	oldKeys, oldPeriod := config.LLMVIPKeys, config.LLMVIPGracePeriod
+	oldVip, oldVipPeriod := vipKeys, vipGracePeriod
+	defer func() {
+		config.LLMVIPKeys, config.LLMVIPGracePeriod = oldKeys, oldPeriod
+		vipKeys, vipGracePeriod = oldVip, oldVipPeriod
+	}()
+
+	config.LLMVIPKeys = []string{
+		strings.ToUpper(keyDigestHex("sk-vip")), // digests are case-insensitive
+		keyDigestHex("Bearer sk-vip-header"),    // configured over the header as sent
+		"sk-not-a-digest",                       // malformed: must be skipped
+		"  ",
+	}
+	config.LLMVIPGracePeriod = "30s"
+	config.buildVipKeys()
+
+	if !isVIPKey("sk-vip") {
+		t.Fatal("the bare-key digest must mark the key VIP")
+	}
+	if !isVIPKey("Bearer sk-vip") {
+		t.Fatal("the Bearer-prefixed form must match the same digest")
+	}
+	if !isVIPKey("Bearer sk-vip-header") {
+		t.Fatal("the header-form digest must match")
+	}
+	if isVIPKey("sk-other") {
+		t.Fatal("an unconfigured key must not be VIP")
+	}
+	if isVIPKey("sk-not-a-digest") {
+		t.Fatal("a malformed digest entry must match nothing")
+	}
+	if vipGracePeriod != 30*time.Second {
+		t.Fatalf("expected the configured 30s hold, got %s", vipGracePeriod)
+	}
+
+	// Unset or unparseable period falls back to the default; a negative one too.
+	for _, s := range []string{"", "notaduration", "-5s"} {
+		config.LLMVIPGracePeriod = s
+		config.buildVipKeys()
+		if vipGracePeriod != defaultVIPGracePeriod {
+			t.Fatalf("expected the default hold for %q, got %s", s, vipGracePeriod)
+		}
+	}
+	// 0 is a legitimate value: it disables the hold without dropping the keys.
+	config.LLMVIPGracePeriod = "0s"
+	config.buildVipKeys()
+	if vipGracePeriod != 0 {
+		t.Fatalf("expected a zero hold, got %s", vipGracePeriod)
+	}
+
+	// No keys configured: nobody holds the slot.
+	config.LLMVIPKeys = nil
+	config.buildVipKeys()
+	if isVIPKey("sk-vip") {
+		t.Fatal("without llm_vip_keys no key may be VIP")
+	}
+}
 func keyDigestHex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])

@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,61 +36,11 @@ type llmbalancer struct {
 	model    string
 }
 
-// VIP slots for the LLM service. Keys are stored as SHA-256 hashes parsed from
-// LLM_PROXY_VIP_KEYS (comma-separated 64-hex-digit digests). A VIP key holds its
-// model for the longer vipGracePeriod after its last request. When no VIP keys
-// are configured (the default), behaviour is identical to the non-VIP path:
-// isVIPKey always returns false and the grace falls back to llmGracePeriod.
-var (
-	// llmGracePeriod is the default (non-VIP) hold after the last LLM request,
-	// previously hardcoded inline in the After interceptor below.
-	llmGracePeriod = time.Second * 10
-	// vipGracePeriod is the (longer) hold applied to VIP keys; falls back to
-	// llmGracePeriod when LLM_PROXY_VIP_GRACE_PERIOD is unset.
-	vipGracePeriod = parseDuration(os.Getenv("LLM_PROXY_VIP_GRACE_PERIOD"), llmGracePeriod)
-	// vipKeys holds the SHA-256 hashes of the VIP API keys.
-	vipKeys = parseVipKeys(os.Getenv("LLM_PROXY_VIP_KEYS"))
-)
-
-// parseDuration parses a duration string, returning def when s is empty or
-// malformed (logging the error).
-func parseDuration(s string, def time.Duration) time.Duration {
-	if s == "" {
-		return def
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		log.Printf("Invalid duration %q, using %s", s, def)
-		return def
-	}
-	return d
-}
-
-// parseVipKeys parses LLM_PROXY_VIP_KEYS (comma-separated 64-hex-digit SHA-256
-// digests) into a set for O(1) lookup. Malformed entries are skipped with a log.
-func parseVipKeys(s string) map[[32]byte]bool {
-	m := make(map[[32]byte]bool)
-	for _, part := range strings.Split(s, ",") {
-		h := strings.TrimSpace(part)
-		if h == "" {
-			continue
-		}
-		b, err := hex.DecodeString(h)
-		if err != nil || len(b) != 32 {
-			log.Printf("Invalid VIP key hash %q (want 64-hex-digit SHA-256), skipping", h)
-			continue
-		}
-		var k [32]byte
-		copy(k[:], b)
-		m[k] = true
-	}
-	return m
-}
-
-// isVIPKey reports whether the API key is a configured VIP key, matched by its
-// SHA-256 hash against vipKeys. The argument is the Authorization header value:
-// both the bare key (the documented form, "Bearer " scheme stripped) and the
-// header as the client sent it are hashed, so a digest of either matches.
+// isVIPKey reports whether the API key is a configured VIP key (llm_vip_keys),
+// matched by its SHA-256 hash against vipKeys. The argument is the Authorization
+// header value: both the bare key (the documented form, "Bearer " scheme
+// stripped) and the header as the client sent it are hashed, so a digest of
+// either matches. No key is VIP until the config lists one.
 func isVIPKey(authorization string) bool {
 	for _, variant := range apiKeyVariants(authorization) {
 		if vipKeys[sha256.Sum256([]byte(variant))] {
@@ -102,17 +50,17 @@ func isVIPKey(authorization string) bool {
 	return false
 }
 
-// llmGraceDelay returns the hold time to apply after the last LLM request body
-// closes. VIP keys hold their model for the longer vipGracePeriod; all other
-// keys use the default llmGracePeriod. Non-POST requests and paths that are not
-// /completions or /embeddings hold for 0 (no grace).
+// llmGraceDelay returns how long the LLM keeps holding the service slot after
+// its last request body closes — the WAIT state, during which the model stays
+// loaded and nothing else gets the GPU. Only VIP keys get that hold, for
+// llm_vip_grace_period; every other key frees the slot at once, so whatever is
+// queued (another model, another GPU service) starts right away. Non-POST
+// requests and paths that are not /completions or /embeddings never hold.
 func llmGraceDelay(req *http.Request) time.Duration {
 	if req.Method == "POST" &&
-		(strings.Contains(req.URL.Path, "/completions") || strings.Contains(req.URL.Path, "/embeddings")) {
-		if isVIPKey(req.Header.Get("Authorization")) {
-			return vipGracePeriod
-		}
-		return llmGracePeriod
+		(strings.Contains(req.URL.Path, "/completions") || strings.Contains(req.URL.Path, "/embeddings")) &&
+		isVIPKey(req.Header.Get("Authorization")) {
+		return vipGracePeriod
 	}
 	return 0
 }

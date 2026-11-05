@@ -30,11 +30,17 @@ func newFakeUpstream(t *testing.T, sleep time.Duration) *httptest.Server {
 }
 
 func newTestProxy(upstream *url.URL) *httptest.Server {
+	proxy, _ := newTestProxyWithUpdates(upstream)
+	return proxy
+}
+
+// newTestProxyWithUpdates builds the proxy and also returns the channel its
+// service queue publishes state updates on, for tests that assert which states a
+// request leaves behind (WAIT only for VIP keys, NONE for everyone else). The
+// channel is buffered at 1000 updates, so a caller that ignores it cannot wedge
+// the queue.
+func newTestProxyWithUpdates(upstream *url.URL) (*httptest.Server, chan servicequeue.SvcUpdate) {
 	svcChan := make(chan servicequeue.SvcUpdate, 1000)
-	go func() {
-		for range svcChan {
-		}
-	}()
 	sq := servicequeue.NewServiceQueue(svcChan)
 	lp := &llmProxy{
 		sq:     sq,
@@ -43,7 +49,7 @@ func newTestProxy(upstream *url.URL) *httptest.Server {
 	}
 	// The production ReverseProxy, so the tests exercise the real wiring
 	// (including the response-side model rewrite and CORS fix).
-	return httptest.NewServer(newHandler(lp, newReverseProxy(lp, upstream)))
+	return httptest.NewServer(newHandler(lp, newReverseProxy(lp, upstream))), svcChan
 }
 
 func doRequest(t *testing.T, proxyURL, path, model, key string) (start, end time.Time, err error) {
@@ -98,21 +104,18 @@ func startCancelable(t *testing.T, proxyURL, path, model, key string) (cancel fu
 	return cancelFn, ch
 }
 
-// A1 and A2 (same user) run concurrently: A2 re-enters the queue without waiting.
-// B (different model/key) must stay queued until after the last A finishes + grace period.
-func TestGracePeriodBlocksDifferentModel(t *testing.T) {
+// A1 and A2 (same key, in flight together) share the slot: A2 re-enters without
+// waiting. B (different model and key) is queued while they run, and starts the
+// moment the last of them is gone — a non-VIP request leaves no hold behind, so
+// the queue goes to NONE, never to WAIT.
+func TestNonVipRequestFreesSlotAtOnce(t *testing.T) {
 	const sleep = 400 * time.Millisecond
-	const grace = 300 * time.Millisecond
 
 	upstream := newFakeUpstream(t, sleep)
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace := gracePeriod
-	gracePeriod = grace
-	defer func() { gracePeriod = oldGrace }()
-
-	proxy := newTestProxy(upURL)
+	proxy, updates := newTestProxyWithUpdates(upURL)
 	defer proxy.Close()
 
 	var (
@@ -149,35 +152,38 @@ func TestGracePeriodBlocksDifferentModel(t *testing.T) {
 	if a1e.Sub(a1s) > 2*sleep {
 		t.Errorf("A1 was unexpectedly blocked, took %v", a1e.Sub(a1s))
 	}
-	// B must not be released before the later of A1/A2 finished + grace period.
-	lastA := a1e
-	if a2e.After(lastA) {
-		lastA = a2e
+	// B queued behind the two A requests and then ran once: its whole duration is
+	// one upstream call, with no hold on top of it.
+	if be.Sub(bs) > sleep+time.Second {
+		t.Errorf("B waited for a hold only VIP keys get: %v (want ~%v)", be.Sub(bs), sleep)
 	}
-	earliestB := lastA.Add(grace)
-	if be.Before(earliestB.Add(-100 * time.Millisecond)) {
-		t.Errorf("B released too early: finished %v, but grace ends at %v", be, earliestB)
-	}
-	// B's own duration should be ~sleep, not queued time.
-	if be.Sub(bs) > sleep+2*time.Second {
-		t.Errorf("B took too long: %v", be.Sub(bs))
+	// The published states say the same thing: the slot went back to NONE
+	// without ever entering WAIT.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case u := <-updates:
+			switch u.Type {
+			case servicequeue.NONE:
+				return
+			case servicequeue.WAIT:
+				t.Fatalf("a non-VIP request held the slot: WAIT/%v published", u.WaitType)
+			}
+		case <-deadline:
+			t.Fatal("the queue never returned to NONE after the last request")
+		}
 	}
 }
 
-// A1 (completions, grace) and A2 (encode, no grace) overlap; A2 finishes last.
-// Release happens right after the last request finishes (encode has no grace),
-// and B must not be released before A2 finishes.
+// A1 (completions) and A2 (encode) overlap; A2 finishes last. Neither is VIP, so
+// the slot frees when the last holder leaves — not when the first one does — and
+// B starts then, without any hold on top.
 func TestReleaseAfterLastRequest(t *testing.T) {
 	const sleep = 400 * time.Millisecond
-	const grace = 500 * time.Millisecond
 
 	upstream := newFakeUpstream(t, sleep)
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
-
-	oldGrace := gracePeriod
-	gracePeriod = grace
-	defer func() { gracePeriod = oldGrace }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -206,12 +212,12 @@ func TestReleaseAfterLastRequest(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Encode has no grace: B can only start after A2 (the last A) finished.
+	// B can only start after A2, the last holder, finished.
 	if be.Before(a2e.Add(-100 * time.Millisecond)) {
 		t.Errorf("B finished before A2: be=%v a2e=%v", be, a2e)
 	}
-	if be.Sub(bs) > sleep+2*time.Second {
-		t.Errorf("B took too long: %v", be.Sub(bs))
+	if be.Sub(bs) > sleep+time.Second {
+		t.Errorf("B waited beyond the last holder: %v (want ~%v)", be.Sub(bs), sleep)
 	}
 }
 
@@ -221,15 +227,10 @@ func TestReleaseAfterLastRequest(t *testing.T) {
 // different model sees "no model held" and barges into a generation in flight.
 func TestNoModelRequestReenters(t *testing.T) {
 	const sleep = 400 * time.Millisecond
-	const grace = 300 * time.Millisecond
 
 	upstream := newFakeUpstream(t, sleep)
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
-
-	oldGrace := gracePeriod
-	gracePeriod = grace
-	defer func() { gracePeriod = oldGrace }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -261,65 +262,56 @@ func TestNoModelRequestReenters(t *testing.T) {
 	}
 	wg.Wait()
 
-	// A2 must not wait for the grace period.
+	// A2 must not wait for the model to be released.
 	if a2e.Sub(a2s) > 2*sleep {
 		t.Errorf("model-less request should re-enter, took %v (expected < %v)", a2e.Sub(a2s), 2*sleep)
 	}
 	if a1e.Sub(a1s) > 2*sleep {
 		t.Errorf("A1 was unexpectedly blocked, took %v", a1e.Sub(a1s))
 	}
-	// B still waits for the last A + grace.
+	// B queued behind both A requests, which hold the slot while in flight.
 	lastA := a1e
 	if a2e.After(lastA) {
 		lastA = a2e
 	}
-	if be.Before(lastA.Add(grace - 100*time.Millisecond)) {
-		t.Errorf("B released too early: %v, grace ends at %v", be, lastA.Add(grace))
+	if be.Before(lastA.Add(-100 * time.Millisecond)) {
+		t.Errorf("B released while an A request was still in flight: %v, last A finished %v", be, lastA)
 	}
-	// B should not be double-blocked; total time bounded by queue + one upstream call.
-	if be.Sub(bs) > 2*sleep+grace+2*time.Second {
+	// B is not double-blocked: one upstream call on top of the queue wait.
+	if be.Sub(bs) > 2*sleep+time.Second {
 		t.Errorf("B took too long: %v", be.Sub(bs))
 	}
 }
 
-// After the grace period expires the queue frees; the next request (any model)
-// proceeds immediately.
-func TestQueueFreesAfterGrace(t *testing.T) {
+// A non-VIP request leaves the queue free the moment it is done: the very next
+// request (any model, any key) proceeds without waiting for a hold to expire.
+func TestQueueFreesAfterNonVipRequest(t *testing.T) {
 	const sleep = 300 * time.Millisecond
-	const grace = 300 * time.Millisecond
 
 	upstream := newFakeUpstream(t, sleep)
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace := gracePeriod
-	gracePeriod = grace
-	defer func() { gracePeriod = oldGrace }()
-
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
 
-	s, e, err := doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "keyA")
-	if err != nil {
+	if _, _, err := doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "keyA"); err != nil {
 		t.Fatalf("first request failed: %v", err)
 	}
-	_ = s
-	_ = e
-	// wait for grace to elapse
-	time.Sleep(grace + 50*time.Millisecond)
 
 	cs, ce, err := doRequest(t, proxy.URL, "/v1/chat/completions", "mistral", "keyB")
 	if err != nil {
 		t.Fatalf("second request failed: %v", err)
 	}
-	if ce.Sub(cs) > 2*sleep {
-		t.Errorf("second request should pass immediately, took %v", ce.Sub(cs))
+	if ce.Sub(cs) > sleep+time.Second {
+		t.Errorf("the slot stayed held after a non-VIP request: the next one waited %v (want ~%v)", ce.Sub(cs), sleep)
 	}
 }
 
 // Three parallel requests from user A hold the slot (re-enter). Two are canceled
 // client-side; the slot must stay held while the third is still in flight, so a
-// different user B is queued until the last A finishes + grace.
+// different user B is queued until the last A finishes. A is a VIP key, so the
+// hold then keeps the slot for one more grace period.
 func TestCanceledRequestsDontFreeSlotEarly(t *testing.T) {
 	const sleep = 600 * time.Millisecond
 	const grace = 300 * time.Millisecond
@@ -328,9 +320,9 @@ func TestCanceledRequestsDontFreeSlotEarly(t *testing.T) {
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace := gracePeriod
-	gracePeriod = grace
-	defer func() { gracePeriod = oldGrace }()
+	oldVip, oldKeys := vipGracePeriod, vipKeys
+	vipGracePeriod, vipKeys = grace, vipSet("keyA")
+	defer func() { vipGracePeriod, vipKeys = oldVip, oldKeys }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -372,10 +364,6 @@ func TestStubbedLookupAndTools(t *testing.T) {
 	upstream := newFakeUpstream(t, sleep)
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
-
-	oldGrace := gracePeriod
-	gracePeriod = sleep
-	defer func() { gracePeriod = oldGrace }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -536,9 +524,9 @@ func vipSet(keys ...string) map[[32]byte]bool {
 	return m
 }
 
-// A VIP key's response holds the model for the longer vipGracePeriod, so a
-// different-model non-VIP key must wait until that period expires rather than
-// the shorter gracePeriod.
+// A VIP key keeps the slot after its last request: the queue goes to WAIT/LLM
+// and stays there for vipGracePeriod, so a different-model non-VIP key waits the
+// whole hold out. Only VIP keys get this; everyone else frees the slot at once.
 func TestVipGracePeriodBlocksDifferentModel(t *testing.T) {
 	const sleep = 300 * time.Millisecond
 	const vipGrace = 900 * time.Millisecond
@@ -547,15 +535,13 @@ func TestVipGracePeriodBlocksDifferentModel(t *testing.T) {
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace := gracePeriod
 	oldVip := vipGracePeriod
 	oldKeys := vipKeys
-	gracePeriod = 200 * time.Millisecond
 	vipGracePeriod = vipGrace
 	vipKeys = vipSet("vipkey")
-	defer func() { gracePeriod, vipGracePeriod, vipKeys = oldGrace, oldVip, oldKeys }()
+	defer func() { vipGracePeriod, vipKeys = oldVip, oldKeys }()
 
-	proxy := newTestProxy(upURL)
+	proxy, updates := newTestProxyWithUpdates(upURL)
 	defer proxy.Close()
 
 	var (
@@ -576,6 +562,11 @@ func TestVipGracePeriodBlocksDifferentModel(t *testing.T) {
 	wg.Wait()
 
 	_ = vs
+	// The hold is a queue state, not just a delay: the VIP's response left the
+	// slot WAIT/LLM rather than NONE.
+	if u := nextWait(t, updates, vipGrace+2*time.Second); u.WaitType != servicequeue.LLM {
+		t.Errorf("the hold must belong to the LLM, got WAIT/%v", u.WaitType)
+	}
 	// B (different model, non-VIP) must not be released before the VIP's longer
 	// grace period has fully elapsed after the VIP's response.
 	if be.Before(ve.Add(vipGrace - 100*time.Millisecond)) {
@@ -586,9 +577,26 @@ func TestVipGracePeriodBlocksDifferentModel(t *testing.T) {
 	}
 }
 
+// nextWait reads queue updates until a WAIT state shows up, and fails the test if
+// the deadline passes first.
+func nextWait(t *testing.T, updates chan servicequeue.SvcUpdate, within time.Duration) servicequeue.SvcUpdate {
+	t.Helper()
+	deadline := time.After(within)
+	for {
+		select {
+		case u := <-updates:
+			if u.Type == servicequeue.WAIT {
+				return u
+			}
+		case <-deadline:
+			t.Fatal("the queue never entered WAIT")
+		}
+	}
+}
+
 // A non-VIP key requesting the SAME model a VIP holds must not re-enter
 // (intercept) the slot while the VIP's hold is active; it stays queued until the
-// VIP's grace period expires. A normal holder would let a same-model key re-enter.
+// VIP's grace period expires. A non-VIP holder would let a same-model key in.
 func TestVipBlocksSameModelInterception(t *testing.T) {
 	const sleep = 300 * time.Millisecond
 	const vipGrace = 900 * time.Millisecond
@@ -597,13 +605,11 @@ func TestVipBlocksSameModelInterception(t *testing.T) {
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace := gracePeriod
 	oldVip := vipGracePeriod
 	oldKeys := vipKeys
-	gracePeriod = 200 * time.Millisecond
 	vipGracePeriod = vipGrace
 	vipKeys = vipSet("vipkey")
-	defer func() { gracePeriod, vipGracePeriod, vipKeys = oldGrace, oldVip, oldKeys }()
+	defer func() { vipGracePeriod, vipKeys = oldVip, oldKeys }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -645,13 +651,11 @@ func TestVipSameKeyReenters(t *testing.T) {
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace := gracePeriod
 	oldVip := vipGracePeriod
 	oldKeys := vipKeys
-	gracePeriod = 200 * time.Millisecond
 	vipGracePeriod = vipGrace
 	vipKeys = vipSet("vipkey")
-	defer func() { gracePeriod, vipGracePeriod, vipKeys = oldGrace, oldVip, oldKeys }()
+	defer func() { vipGracePeriod, vipKeys = oldVip, oldKeys }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -753,7 +757,6 @@ func TestOptionsPreflightBypassesQueue(t *testing.T) {
 // proxy fails the request. A holder left behind keeps the slot occupied and the
 // next request is only let through by the hard cap.
 func TestCanceledGetReleasesSlot(t *testing.T) {
-	const grace = 150 * time.Millisecond
 	const holdCap = 30 * time.Second // the hard cap must not be what frees the slot
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -766,9 +769,9 @@ func TestCanceledGetReleasesSlot(t *testing.T) {
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace, oldCap := gracePeriod, hardCap
-	gracePeriod, hardCap = grace, holdCap
-	defer func() { gracePeriod, hardCap = oldGrace, oldCap }()
+	oldCap := hardCap
+	hardCap = holdCap
+	defer func() { hardCap = oldCap }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -778,7 +781,7 @@ func TestCanceledGetReleasesSlot(t *testing.T) {
 	if _, _, err := doRequest(t, proxy.URL, "/v1/chat/completions", "llama", "keyA"); err != nil {
 		t.Fatalf("POST holding the model: %v", err)
 	}
-	time.Sleep(grace + 100*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// 2. a GET on an LLM path that the client abandons.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -798,14 +801,14 @@ func TestCanceledGetReleasesSlot(t *testing.T) {
 	cancel()
 	time.Sleep(200 * time.Millisecond) // let the proxy error handler run
 
-	// 3. another model must be let through after the grace period, not after the
-	//    hold cap.
+	// 3. another model must be let through as soon as the canceled GET's holder
+	//    is released, not after the hold cap.
 	start := time.Now()
 	if _, _, err := doRequest(t, proxy.URL, "/v1/chat/completions", "mistral", "keyB"); err != nil {
 		t.Fatalf("POST after the canceled GET: %v", err)
 	}
 	if took := time.Since(start); took > 2*time.Second {
-		t.Errorf("the canceled GET did not free its holder: the next request waited %v (grace %v, hold cap %v)", took, grace, holdCap)
+		t.Errorf("the canceled GET did not free its holder: the next request waited %v (hold cap %v)", took, holdCap)
 	}
 }
 
@@ -973,7 +976,9 @@ func TestUnmappedModelPassesThrough(t *testing.T) {
 }
 
 // Two aliases of one real model must share its slot like same-model requests,
-// while a different real model still queues behind them.
+// while a different real model still queues behind them. The two aliases are VIP
+// keys, so after they are done the slot stays held for the VIP grace period and
+// only then goes to C.
 func TestRewrittenAliasesShareSlot(t *testing.T) {
 	const sleep = 400 * time.Millisecond
 	const grace = 300 * time.Millisecond
@@ -982,14 +987,14 @@ func TestRewrittenAliasesShareSlot(t *testing.T) {
 	defer upstream.Close()
 	upURL, _ := url.Parse(upstream.URL)
 
-	oldGrace := gracePeriod
+	oldVip, oldKeys := vipGracePeriod, vipKeys
 	oldRewrites := modelRewrites
-	gracePeriod = grace
+	vipGracePeriod, vipKeys = grace, vipSet("keyA", "keyB")
 	modelRewrites = map[string]string{
 		"alias-a": "real-model",
 		"alias-b": "real-model",
 	}
-	defer func() { gracePeriod, modelRewrites = oldGrace, oldRewrites }()
+	defer func() { vipGracePeriod, vipKeys, modelRewrites = oldVip, oldKeys, oldRewrites }()
 
 	proxy := newTestProxy(upURL)
 	defer proxy.Close()
@@ -1021,7 +1026,7 @@ func TestRewrittenAliasesShareSlot(t *testing.T) {
 		t.Errorf("B (an alias of the held real model) should re-enter, took %v (expected < %v)", be.Sub(bs), 2*sleep)
 	}
 	if a1e.Sub(a1s) > 2*sleep {
-		t.Errorf("A1 was unexpectedly blocked, took %v", a1e.Sub(a1s) )
+		t.Errorf("A1 was unexpectedly blocked, took %v", a1e.Sub(a1s))
 	}
 	lastA := a1e
 	if be.After(lastA) {

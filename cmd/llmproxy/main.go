@@ -25,17 +25,18 @@ import (
 	"github.com/rkfg/authproxy/servicequeue"
 )
 
+// defaultVIPGracePeriod is the hold used when LLM_PROXY_VIP_GRACE_PERIOD is
+// unset or malformed.
+const defaultVIPGracePeriod = 10 * time.Second
+
 var (
 	upstreamAddr  = os.Getenv("LLM_PROXY_UPSTREAM")
 	listenAddr    = os.Getenv("LLM_PROXY_LISTEN")
 	defaultAPIKey = os.Getenv("LLM_PROXY_DEFAULT_API_KEY")
-	// gracePeriod is how long the model stays loaded after the last request's
-	// response body closes, so consecutive requests from the same user go
-	// uninterrupted. Mirrors llm.go's waitAfterBody.
-	gracePeriod = parseDuration(os.Getenv("LLM_PROXY_GRACE_PERIOD"), 10*time.Second)
-	// vipGracePeriod is the (longer) hold applied to VIP keys. It falls back to
-	// the normal gracePeriod when LLM_PROXY_VIP_GRACE_PERIOD is unset.
-	vipGracePeriod = parseDuration(os.Getenv("LLM_PROXY_VIP_GRACE_PERIOD"), gracePeriod)
+	// vipGracePeriod is how long a VIP key keeps the LLM holding the slot after
+	// its last request (see graceDelay). No other key holds the slot: it frees
+	// as soon as its response body closes.
+	vipGracePeriod = parseDuration(os.Getenv("LLM_PROXY_VIP_GRACE_PERIOD"), defaultVIPGracePeriod)
 	// vipKeys holds the SHA-256 hashes of the VIP API keys, parsed from
 	// LLM_PROXY_VIP_KEYS (comma-separated 64-hex-digit digests). Keys are stored
 	// as hashes, never in cleartext.
@@ -213,15 +214,17 @@ func isToolsPath(path string) bool {
 		strings.HasSuffix(path, "/tools")
 }
 
-// graceDelay mirrors llm.go's waitAfterBody. VIP keys hold their model for the
-// longer vipGracePeriod; all other keys use the default gracePeriod.
+// graceDelay mirrors llm.go's waitAfterBody: only a VIP key keeps the LLM
+// holding the slot after its last request, for vipGracePeriod. Every other key
+// frees the slot the moment its response body closes, so the next queued
+// request — another model, or the other service sharing the GPU — starts at
+// once. Non-POST requests and paths that are not /completions or /embeddings
+// never hold the slot.
 func graceDelay(r *http.Request) time.Duration {
 	if r.Method == "POST" &&
-		(strings.Contains(r.URL.Path, "/completions") || strings.Contains(r.URL.Path, "/embeddings")) {
-		if isVIPKey(getAPIKey(r)) {
-			return vipGracePeriod
-		}
-		return gracePeriod
+		(strings.Contains(r.URL.Path, "/completions") || strings.Contains(r.URL.Path, "/embeddings")) &&
+		isVIPKey(getAPIKey(r)) {
+		return vipGracePeriod
 	}
 	return 0
 }

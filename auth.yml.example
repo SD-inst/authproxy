@@ -24,14 +24,24 @@ task_max_lifetime: "2h"
 #     "#a855f7": ["carol"]
 # LLM colors work the same way, but an LLM client authenticates with an API key
 # in the Authorization header instead of a site JWT, so there is no username to
-# map: the list holds the SHA-256 digests of the keys (64 hex digits, the same
-# form LLM_PROXY_VIP_KEYS uses), never the keys themselves. Compute a digest
-# with: printf '%s' 'sk-my-key' | sha256sum
+# map: the list holds the SHA-256 digests of the keys (64 hex digits), never the
+# keys themselves. Compute a digest with: printf '%s' 'sk-my-key' | sha256sum
 # The digest of the header as the client sends it ("Bearer sk-my-key") matches
 # too. Keys without an entry keep the default solid blue.
 # llm_key_colors:
 #     "#22c55e": ["e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]
 #     "#f43f5e": ["2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"]
+# VIP keys: the LLM API keys allowed to keep holding the service queue after
+# their last request. Listed the same way as llm_key_colors — SHA-256 digests,
+# never the keys themselves. For a VIP key the queue stays WAIT/LLM for
+# llm_vip_grace_period after its last response, so its next request finds the
+# model still loaded and no other task (another model, SD, ComfyUI, ...) takes
+# the GPU meanwhile. Any other key frees the slot the moment its response body
+# closes, so whatever is queued starts at once. No keys configured (the
+# default) = nothing is ever held between requests.
+# llm_vip_keys:
+#     - "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+# llm_vip_grace_period: "10s"
 # ip_blacklist: client IPs / CIDR ranges to drop at the connection level.
 # The IP is read from the proxy headers (X-Forwarded-For / X-Real-IP). A
 # matching request has its connection closed with no response sent.
