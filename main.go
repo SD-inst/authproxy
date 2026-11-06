@@ -221,7 +221,13 @@ func main() {
 	e.POST("/login", loginHandler)
 	broker := events.NewBroker()
 	wd := watchdog.NewWatchdog(params.Watchdog)
-	m := newContainerManager(wd, time.Duration(params.StopTimeoutMin)*time.Minute)
+	// The queue comes before the container manager: a container start has to hold
+	// the GPU slot, so the manager needs the queue to claim it with. Nothing sends
+	// on svcChan until the status page consumer (pr.Start) is running, which is
+	// before the first request is served.
+	svcChan := make(chan servicequeue.SvcUpdate)
+	sq := servicequeue.NewServiceQueue(svcChan)
+	m := newContainerManager(wd, time.Duration(params.StopTimeoutMin)*time.Minute, sq)
 	m.downtime = loadDowntime(params.DowntimeFile)
 	if m.downtime {
 		log.Printf("Downtime mode active (from %s): containers will not be started; service requests return 502", params.DowntimeFile)
@@ -236,8 +242,6 @@ func main() {
 	// do, and a container it does not know about never gets an idle timer.
 	m.startReconciler(context.Background())
 	addAdminHandlers(e, m)
-	svcChan := make(chan servicequeue.SvcUpdate)
-	sq := servicequeue.NewServiceQueue(svcChan)
 	pr := progress.NewProgress(broker, SD_URL, config.SDTimeout, wd, mchan, svcChan, config.StatusToken, sq)
 	pr.AddHandlers(e)
 	pr.Start(sq)
@@ -335,10 +339,12 @@ func main() {
 		llm := NewLLMBalancer(llmurl, sq, mchan, pr)
 		// The GPU slot is treated as last held by llama-swap: its container is
 		// never stopped for idleness and it can be carrying a model that was
-		// loaded before authproxy started, so the first request for another GPU
-		// service must unload it — nothing else would, and the two models
-		// together OOM. A1111 loads its checkpoint only when a client joins, so
-		// there is nothing resident on its behalf to unload.
+		// loaded before authproxy started, so the first handover to another GPU
+		// service must unload it — the request joining the queue does, and so does
+		// the start of the container behind it (containerManager.claimGPUSlot) —
+		// or the two models are resident at once and OOM. A1111 loads its
+		// checkpoint only when a client joins, so there is nothing resident on its
+		// behalf to unload.
 		sq.CF = llm.startupCleanup()
 		// The LLM container is tracked like the others and is woken by a request
 		// when it is down, but it is never stopped for idleness: llama-swap does

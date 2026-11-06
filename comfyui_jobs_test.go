@@ -29,7 +29,7 @@ func newCUIJobsEcho(m *containerManager) *echo.Echo {
 // While the container is stopped, the jobs poll must return the empty stub
 // (200, no jobs) and must NOT start the container.
 func TestCUIJobsStubWhenStopped(t *testing.T) {
-	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute)
+	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute, newTestQueue())
 	srv := httptest.NewServer(newCUIJobsEcho(m))
 	defer srv.Close()
 
@@ -66,7 +66,7 @@ func TestCUIJobsProxiesWhenRunning(t *testing.T) {
 	defer backend.Close()
 	target, _ := url.Parse(backend.URL)
 
-	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute)
+	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute, newTestQueue())
 	e := echo.New()
 	real := composeMW(middleware.Rewrite(map[string]string{"/cui/api/jobs*": "/api/jobs$1"}), newCUIProxy(target))
 	e.Any("/cui/api/jobs", m.cuiJobsHandler(real))

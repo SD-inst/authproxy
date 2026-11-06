@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rkfg/authproxy/servicequeue"
 )
 
 // fakeWd records the commands the manager sends to the control endpoint and
@@ -39,7 +41,14 @@ func (f *fakeWd) Exec(_ context.Context, command string) (string, error) {
 }
 
 func newTestManager(wd wdClient) *containerManager {
-	return newContainerManager(wd, 60*time.Minute)
+	return newContainerManager(wd, 60*time.Minute, newTestQueue())
+}
+
+// slotOf reports who currently holds the GPU slot.
+func slotOf(sq *servicequeue.ServiceQueue) servicequeue.SvcType {
+	sq.Lock()
+	defer sq.Unlock()
+	return sq.Service()
 }
 
 // statusWithin takes the status snapshot or fails the test. A status that waits
@@ -202,6 +211,114 @@ func TestControlRestart(t *testing.T) {
 	st.mu.Unlock()
 	if !running || !armed {
 		t.Fatalf("after a restart the service must be running (running=%v armed=%v)", running, armed)
+	}
+}
+
+// The reason a start takes the GPU slot at all: the model resident on the GPU
+// must be gone before the container's process comes up and initializes CUDA, or
+// the two together OOM during the container's boot. The unload is the queue's
+// cleanup for the previous holder, so the claim has to run it — and it has to
+// run it before any start command reaches the watchdog.
+func TestStartEvictsTheResidentModelBeforeTheContainerBoots(t *testing.T) {
+	wd := &fakeWd{enabled: true, resp: "ok"}
+	sq := newTestQueue()
+	m := newContainerManager(wd, 60*time.Minute, sq)
+	// The state authproxy starts in: llama-swap last held the slot and is still
+	// carrying its model, with the unload registered as the cleanup.
+	unloadedAfterCommands := -1
+	sq.CF = &servicequeue.CleanupFunc{
+		F:       func() { unloadedAfterCommands = len(wd.commands) },
+		Service: servicequeue.LLM,
+	}
+	if err := m.control(comfyService, opStart); err != nil {
+		t.Fatalf("start: %s", err)
+	}
+	if unloadedAfterCommands == -1 {
+		t.Fatal("the resident model was never unloaded")
+	}
+	if unloadedAfterCommands != 0 {
+		t.Fatalf("the unload ran after %d watchdog commands; it must run before the container is started", unloadedAfterCommands)
+	}
+	// Freed again at once, so the join that follows reads as a freshly taken slot:
+	// that transition is what makes A1111 load its checkpoint.
+	if got := slotOf(sq); got != servicequeue.NONE {
+		t.Fatalf("a finished start must give the slot back, got %v", got)
+	}
+}
+
+// While a container is starting, no other service may take the slot: the
+// container is already created and is initializing its GPU memory, and loading a
+// model next to it is the OOM this whole mechanism exists to prevent. Once the
+// start is over the slot is free again, and the waiting service takes it.
+func TestStartHoldsTheSlotOnlyWhileTheContainerStarts(t *testing.T) {
+	wd := &fakeWd{enabled: true, resp: "ok", gate: make(chan struct{}), entered: make(chan string, 4)}
+	sq := newTestQueue()
+	m := newContainerManager(wd, 60*time.Minute, sq)
+
+	started := make(chan bool, 1)
+	go func() { m.ensureRunning(comfyService); started <- m.isRunning(comfyService) }()
+	if cmd := <-wd.entered; cmd != "start "+comfyService {
+		t.Fatalf("watchdog command = %q", cmd)
+	}
+
+	takeLLM := make(chan servicequeue.SvcType, 1)
+	go func() {
+		sq.Lock()
+		sq.AwaitReent(servicequeue.LLM)
+		got := sq.Service()
+		sq.Unlock()
+		takeLLM <- got
+	}()
+	select {
+	case got := <-takeLLM:
+		close(wd.gate)
+		t.Fatalf("the LLM took the slot while %s was starting (slot: %v)", comfyService, got)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(wd.gate)
+	if !<-started {
+		t.Fatal("comfyui must be running after its start finished")
+	}
+	if got := <-takeLLM; got != servicequeue.LLM {
+		t.Fatalf("the queued service must get the slot once the start is over, got %v", got)
+	}
+}
+
+// A start that never succeeded leaves nothing resident, so the slot goes back at
+// once: a container that will not come up must not starve the services queued
+// behind it for the whole warm-up hold.
+func TestFailedStartFreesTheSlot(t *testing.T) {
+	wd := &fakeWd{enabled: true, resp: "error: no containers found for service comfyui"}
+	sq := newTestQueue()
+	m := newContainerManager(wd, 60*time.Minute, sq)
+	if err := m.control(comfyService, opStart); err == nil {
+		t.Fatal("expected an error when the start never succeeds")
+	}
+	if got := slotOf(sq); got != servicequeue.NONE {
+		t.Fatalf("a failed start must free the slot, got %v", got)
+	}
+}
+
+// llama-swap allocates nothing when its container starts — the model loads on the
+// request, under the queue — so its start must neither wait for the slot nor take
+// it from whoever holds it.
+func TestLLMContainerStartClaimsNoSlot(t *testing.T) {
+	wd := &fakeWd{enabled: true, resp: "ok"}
+	sq := newTestQueue()
+	m := newContainerManager(wd, 60*time.Minute, sq)
+	sq.Lock()
+	sq.SetService(servicequeue.CUI, "working")
+	sq.Unlock()
+
+	if err := m.control(llmService, opStart); err != nil {
+		t.Fatalf("start: %s", err)
+	}
+	if len(wd.commands) != 1 || wd.commands[0] != "start "+llmService {
+		t.Fatalf("commands = %v, want the single start command", wd.commands)
+	}
+	if got := slotOf(sq); got != servicequeue.CUI {
+		t.Fatalf("starting llama-swap must not disturb the holder, got %v", got)
 	}
 }
 

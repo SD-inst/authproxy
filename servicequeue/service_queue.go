@@ -87,6 +87,13 @@ func NewServiceQueue(svcChan chan<- SvcUpdate) *ServiceQueue {
 	return &result
 }
 
+// Service reports the current holder of the slot. Callers must hold the queue
+// lock: it is the state the condition variable guards, and read without it the
+// value is only true for some earlier instant.
+func (sq *ServiceQueue) Service() SvcType {
+	return sq.service
+}
+
 // caller should lock and unlock sq, returns true if service has been changed or false if it was the same
 func (sq *ServiceQueue) AwaitReent(t SvcType) bool {
 	return sq.AwaitWithPredicateAndDescription(t, true, nil, "")

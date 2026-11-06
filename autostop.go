@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/rkfg/authproxy/servicequeue"
 )
 
 // startAttemptTimeout bounds each individual start attempt; startAttempts is
@@ -95,6 +96,22 @@ var domainService = map[string]string{
 	"cui.":  comfyService,
 }
 
+// gpuSlot maps a managed container to the queue slot it claims across its start.
+// Booting the container is what touches the GPU — the process initializes CUDA
+// and loads what it loads as it comes up — so the start must not overlap the
+// service that currently owns the slot with a model resident in VRAM: claiming
+// the slot first runs that service's cleanup, which is what frees the memory.
+// The LLM container is deliberately absent: llama-swap allocates nothing when it
+// starts (the model loads on the request, under the queue), so gating its start
+// would only make LLM users wait behind one another for nothing. The slot named
+// here is the one that service's own join handler re-enters, which is why the
+// acestep15 container maps to ACESTEP15 and not to the older ACESTEP slot.
+var gpuSlot = map[string]servicequeue.SvcType{
+	sdService:      servicequeue.SD,
+	comfyService:   servicequeue.CUI,
+	acestepService: servicequeue.ACESTEP15,
+}
+
 // pubState is the lock-free view of one service, replaced whole whenever the
 // guarded state changes.
 type pubState struct {
@@ -157,6 +174,11 @@ type containerManager struct {
 	wd        wdClient
 	stopAfter time.Duration
 	states    map[string]*svcState
+	// sq is the GPU slot the manager holds across a container start, so a
+	// container's CUDA init never overlaps a service that has a model resident.
+	// A manager built without it starts containers ungated, which is what the
+	// tests that only exercise the lifecycle view do.
+	sq *servicequeue.ServiceQueue
 	// downtime marks an active maintenance window: stopped containers are never
 	// woken up on demand, and their requests get a 502 (which Caddy turns into
 	// the maintenance/timer page) instead of a start. It is set once at startup
@@ -173,12 +195,14 @@ type reconcileInfo struct {
 	err string
 }
 
-// newContainerManager builds a manager for the given watchdog and inactivity
-// timeout. If the watchdog has no address, auto start/stop is disabled.
-func newContainerManager(wd wdClient, stopAfter time.Duration) *containerManager {
+// newContainerManager builds a manager for the given watchdog, inactivity
+// timeout, and GPU slot. If the watchdog has no address, auto start/stop is
+// disabled.
+func newContainerManager(wd wdClient, stopAfter time.Duration, sq *servicequeue.ServiceQueue) *containerManager {
 	m := &containerManager{
 		wd:        wd,
 		stopAfter: stopAfter,
+		sq:        sq,
 		states:    make(map[string]*svcState),
 	}
 	for _, svc := range managedServices {
@@ -263,10 +287,70 @@ func (m *containerManager) ensureRunning(svc string) {
 	st.setPhaseLocked(stateStopped)
 }
 
-// startLocked runs up to startAttempts start commands for svc, each bounded by
-// startAttemptTimeout. It reports whether the container ended up running. Must
-// be called with the service lock (svcState.mu) held.
+// claimGPUSlot takes the queue slot of svc before its container is started, and
+// reports whether it claimed one. Waiting for the slot is what evicts the model
+// resident on the GPU: the queue runs the previous holder's cleanup on the
+// transition, and that is the whole point — the memory has to be gone before
+// this container's process starts initializing CUDA. A service that already owns
+// the slot re-enters it, which disturbs nothing: the container is up in that
+// case, and a start is only an idempotent re-check. Must be called with the
+// service lock held, which is what keeps two services from starting at once.
+func (m *containerManager) claimGPUSlot(svc string) bool {
+	t, ok := gpuSlot[svc]
+	if !ok || m.sq == nil {
+		return false
+	}
+	m.sq.Lock()
+	defer m.sq.Unlock()
+	m.sq.AwaitReent(t)
+	// AwaitReent names the holder; the description is what the status page shows
+	// while the container boots.
+	m.sq.SetService(t, "starting...")
+	return true
+}
+
+// releaseGPUSlot gives up the slot taken by claimGPUSlot once the start is over.
+// The slot is freed rather than kept for the container's warm-up, and that is a
+// deliberate trade: the join handlers decide by the queue transition whether the
+// service has to load what it loads on demand — A1111 posts reload-checkpoint
+// only when it has just taken the slot — so a slot still claimed by the manager
+// would read to them as a service that is already loaded. What is left open is
+// only the second or two between the container answering its healthcheck and
+// finishing its own GPU init, which is far narrower than the window this claim
+// closes, where the previous model was resident for the whole boot.
+func (m *containerManager) releaseGPUSlot(svc string) {
+	t, ok := gpuSlot[svc]
+	if !ok || m.sq == nil {
+		return
+	}
+	m.sq.Lock()
+	defer m.sq.Unlock()
+	if m.sq.Service() != t {
+		// A stale cleanup timer zeroed the slot during the start and someone else
+		// has since taken it. Freeing it here would hand out their hold.
+		return
+	}
+	m.sq.SetService(servicequeue.NONE)
+}
+
+// startLocked claims the GPU slot for svc, starts its container, and gives the
+// slot back. It reports whether the container ended up running. Must be called
+// with the service lock (svcState.mu) held. The queue lock is taken inside, and
+// always after the service lock: nothing that holds the queue lock reaches back
+// into the manager, so the two can never be held in the opposite order.
 func (m *containerManager) startLocked(svc string) bool {
+	if !m.claimGPUSlot(svc) {
+		return m.startAttemptsLocked(svc)
+	}
+	started := m.startAttemptsLocked(svc)
+	m.releaseGPUSlot(svc)
+	return started
+}
+
+// startAttemptsLocked runs up to startAttempts start commands for svc, each
+// bounded by startAttemptTimeout. It reports whether the container ended up
+// running. Must be called with the service lock held.
+func (m *containerManager) startAttemptsLocked(svc string) bool {
 	for attempt := 1; attempt <= startAttempts; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), startAttemptTimeout)
 		resp, err := m.wd.Exec(ctx, "start "+svc)
@@ -407,11 +491,19 @@ func (m *containerManager) control(svc, op string) error {
 		log.Printf("Service %s stopped manually", svc)
 	case opRestart:
 		// The watchdog waits for the container to become healthy, so this needs
-		// the start budget, not the stop one.
+		// the start budget, not the stop one. A restart re-allocates the
+		// container's GPU memory, so it needs the slot for the same reason a
+		// start does, and the slot is given up afterwards: the container came back
+		// with nothing loaded, and its clients reconnect through the join handlers,
+		// which reload on a freshly taken slot.
 		ctx, cancel := context.WithTimeout(context.Background(), startAttemptTimeout)
 		defer cancel()
 		st.setPhaseLocked(stateStarting)
+		claimed := m.claimGPUSlot(svc)
 		resp, err := m.wd.Exec(ctx, "restart "+svc)
+		if claimed {
+			m.releaseGPUSlot(svc)
+		}
 		if err == nil && resp != "ok" {
 			err = errors.New(resp)
 		}

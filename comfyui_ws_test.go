@@ -42,7 +42,7 @@ func dialCUIWS(t *testing.T, srv *httptest.Server) *websocket.Conn {
 // A websocket reconnect while the container is stopped must be accepted without
 // error, must send no data, and must NOT start the container.
 func TestCUIWSSilentWhenStopped(t *testing.T) {
-	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute)
+	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute, newTestQueue())
 	srv := httptest.NewServer(newCUIWSEcho(m))
 	defer srv.Close()
 
@@ -84,7 +84,7 @@ func TestCUIWSProxiesWhenRunning(t *testing.T) {
 	defer backend.Close()
 	target, _ := url.Parse(backend.URL)
 
-	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute)
+	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute, newTestQueue())
 	e := echo.New()
 	real := composeMW(middleware.Rewrite(map[string]string{"/cui/ws*": "/ws$1"}), newCUIProxy(target))
 	e.Any("/cui/ws", m.cuiWSHandler(real))
@@ -119,7 +119,7 @@ func TestCUIWSProxiesWhenRunning(t *testing.T) {
 // Once the container starts, the silent WS must close itself so the client
 // reconnects to the real proxy.
 func TestCUIWSClosesWhenStarted(t *testing.T) {
-	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute)
+	m := newContainerManager(watchdog.NewWatchdog("127.0.0.1:1"), time.Minute, newTestQueue())
 	srv := httptest.NewServer(newCUIWSEcho(m))
 	defer srv.Close()
 
