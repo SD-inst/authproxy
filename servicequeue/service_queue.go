@@ -19,8 +19,7 @@ const (
 	CUI
 	ACESTEP
 	ACESTEP15
-	WAIT   = 500
-	IGNORE = 999
+	WAIT = 500
 )
 
 func (s SvcType) String() string {
@@ -51,21 +50,31 @@ type CleanupFunc struct {
 	Service SvcType
 }
 
+// SvcUpdate is a snapshot of the slot state taken under the queue lock, not a
+// delta: it carries who holds the slot now and who held it before the last real
+// change, so a consumer never has to reconstruct the history from its own
+// memory of previous updates.
 type SvcUpdate struct {
-	Type        SvcType
-	WaitType    SvcType
-	Queue       int32
-	Description string
+	Type         SvcType
+	WaitType     SvcType
+	PrevType     SvcType
+	PrevWaitType SvcType
+	Queue        int32
+	Description  string
 }
 
 type ServiceQueue struct {
 	sync.Mutex
-	cv            *sync.Cond
-	cleanupTimer  *time.Timer
-	cleanupID     int
-	service       SvcType
-	prevService   SvcType
-	waitedService SvcType
+	cv           *sync.Cond
+	cleanupTimer *time.Timer
+	cleanupID    int
+	service      SvcType
+	prevService  SvcType
+	// prevWaitedService is the waited-for service that belonged to prevService,
+	// so a WAIT state can be named in the previous slot (WAIT/LLM) instead of a
+	// bare WAIT. Guarded by the queue lock, written only by SetService.
+	prevWaitedService SvcType
+	waitedService     SvcType
 	// holdCount is the number of in-flight requests currently holding the slot
 	// (acquired, or re-entered under the same holder). A request calls Hold at
 	// acquisition and Release at body-close/error; the slot is only freed when
@@ -129,9 +138,10 @@ func (sq *ServiceQueue) maybeUpdateQueue(ql int32) <-chan bool {
 		ql2 := sq.waitqueue.Load()
 		if ql == ql2 {
 			sq.Lock()
-			waited := sq.waitedService
+			update := sq.snapshot()
 			sq.Unlock()
-			sq.svcChan <- SvcUpdate{Type: IGNORE, WaitType: waited, Queue: ql}
+			update.Queue = ql
+			sq.svcChan <- update
 			sent <- true
 		} else {
 			sent <- false
@@ -214,6 +224,15 @@ func (sq *ServiceQueue) Release(hardCap, afterBody time.Duration) {
 		return
 	}
 	log.Printf("*** Release: last holder, freeing slot ***")
+	if sq.service == NONE {
+		// The slot was already taken away from this holder — a hard-cap timer
+		// fired while its request was still in flight. Arming the after-body
+		// grace on a free slot would invent a WAIT state for a holder that no
+		// longer exists, and the status page would show a transition that never
+		// happened.
+		log.Printf("*** Release: slot is already free, nothing to release ***")
+		return
+	}
 	sq.CancelCleanup()
 	if afterBody > 0 {
 		sq.SetService(WAIT)
@@ -223,11 +242,23 @@ func (sq *ServiceQueue) Release(hardCap, afterBody time.Duration) {
 	}
 }
 
-func (sq *ServiceQueue) SendDescriptionUpdate(t SvcType, description string) {
-	sq.svcChan <- SvcUpdate{Type: t, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: description}
+// snapshot copies the guarded slot state into an update. Callers must hold the
+// queue lock.
+func (sq *ServiceQueue) snapshot() SvcUpdate {
+	return SvcUpdate{
+		Type:         sq.service,
+		WaitType:     sq.waitedService,
+		PrevType:     sq.prevService,
+		PrevWaitType: sq.prevWaitedService,
+		Queue:        sq.waitqueue.Load(),
+	}
 }
 
-// should be called under lock
+// SetService moves the slot to s and publishes the resulting state. Re-entering
+// the service that already holds the slot changes nothing but the description:
+// the recorded previous holder stays the one from the last real transition, so
+// the status page keeps showing where the current task came from instead of
+// "X ⇐ X" for every progress beat. Must be called under the queue lock.
 func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
 	desc := ""
 	if len(description) > 0 {
@@ -235,37 +266,48 @@ func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
 	}
 	if sq.service != s {
 		log.Printf("*** Setting service to %v ***", s)
-	}
-	sq.prevService = sq.service
-	switch s {
-	case WAIT:
-		if sq.service != WAIT && sq.service != NONE {
-			sq.waitedService = sq.service
-			sq.service = s
-			log.Printf("*** Setting service waiting to %v ***", sq.waitedService)
-		} else {
-			sq.service = NONE
+		sq.prevService = sq.service
+		sq.prevWaitedService = sq.waitedService
+		switch s {
+		case WAIT:
+			if sq.service != WAIT && sq.service != NONE {
+				sq.waitedService = sq.service
+				sq.service = s
+				log.Printf("*** Setting service waiting to %v ***", sq.waitedService)
+			} else {
+				sq.service = NONE
+				sq.waitedService = NONE
+			}
+		case NONE:
 			sq.waitedService = NONE
+			sq.service = NONE
+			// Reaching NONE means no holder owns the slot. Reset the count so a
+			// holder that leaked (freed by the hard cap without a Release) doesn't
+			// leave a stale count that would block the next acquisition.
+			sq.holdCount = 0
+		default:
+			sq.service = s
 		}
-	case NONE:
-		sq.waitedService = NONE
-		sq.service = NONE
-		// Reaching NONE means no holder owns the slot. Reset the count so a
-		// holder that leaked (freed by the hard cap without a Release) doesn't
-		// leave a stale count that would block the next acquisition.
-		sq.holdCount = 0
-	default:
-		sq.service = s
 	}
 	sq.cv.Broadcast()
-	sq.svcChan <- SvcUpdate{Type: sq.service, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: desc}
+	update := sq.snapshot()
+	update.Description = desc
+	sq.svcChan <- update
 }
 
+// UpdateProgressDescription re-publishes the current slot state with a fresh
+// task line ("rendering 12/20 steps") without changing who holds the slot. It
+// takes the queue lock itself: its caller is the status-page poller, which does
+// not own the state machine. Returns false when there is no task to describe.
 func (sq *ServiceQueue) UpdateProgressDescription(description string) bool {
+	sq.Lock()
+	defer sq.Unlock()
 	if sq.service == NONE {
 		return false
 	}
-	sq.svcChan <- SvcUpdate{Type: sq.service, WaitType: sq.waitedService, Queue: sq.waitqueue.Load(), Description: description}
+	update := sq.snapshot()
+	update.Description = description
+	sq.svcChan <- update
 	return true
 }
 

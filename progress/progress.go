@@ -578,53 +578,39 @@ func (p *progress) gpuStatus() {
 
 func (p *progress) serviceUpdater() {
 	var lastDescription string
-	var lastPrevService servicequeue.SvcType
-	var lastPrevWaitService servicequeue.SvcType
-	var prevSvcType servicequeue.SvcType
+	// last is the slot state the queue reported in the previous update. Every
+	// SvcUpdate is a snapshot taken under the queue lock, so the previous
+	// holder arrives with it. Rebuilding it from the broker's cached packet
+	// instead cost a round trip to the broker goroutine on every update, and
+	// that call gives up after a second and returns nil: the previous service
+	// then stayed at its zero value, which is NONE, and the page rendered a
+	// real transition as "NONE ⇐ NONE".
+	var last servicequeue.SvcUpdate
 	for svc := range p.svcChan {
-		if svc.Type == servicequeue.NONE || svc.Type == servicequeue.WAIT {
-			// Service is NONE or WAIT: no active job, so reset the progress.
-			// Non-blocking: if the updater is already resetting, drop it.
-			select {
-			case p.resetProgress <- svc.Type:
-			default:
-			}
-		} else if prevSvcType == servicequeue.NONE || prevSvcType == servicequeue.WAIT {
-			// Transitioned from NONE/WAIT to an active service: start the timer.
-			select {
-			case p.startJob <- svc.Type:
-			default:
+		if svc.Type != last.Type {
+			if svc.Type == servicequeue.NONE || svc.Type == servicequeue.WAIT {
+				// Service is NONE or WAIT: no active job, so reset the progress.
+				// Non-blocking: if the updater is already resetting, drop it.
+				select {
+				case p.resetProgress <- svc.Type:
+				default:
+				}
+			} else if last.Type == servicequeue.NONE || last.Type == servicequeue.WAIT {
+				// Transitioned from NONE/WAIT to an active service: start the timer.
+				select {
+				case p.startJob <- svc.Type:
+				default:
+				}
 			}
 		}
-		prevSvcType = svc.Type
-		resp := p.b.State(events.SERVICE_UPDATE)
-		event := events.ServiceUpdate{Service: svc.Type, WaitService: svc.WaitType, LastActive: time.Now(), Queue: svc.Queue}
+		last = svc
+		event := events.ServiceUpdate{Service: svc.Type, PrevService: svc.PrevType, WaitService: svc.WaitType, PrevWaitService: svc.PrevWaitType, LastActive: time.Now(), Queue: svc.Queue}
 		if svc.Description != "" {
 			event.Description = svc.Description
 			lastDescription = svc.Description
-		} else if pkt, ok := resp.(events.Packet); ok && pkt.Type == events.SERVICE_UPDATE {
-			if prevSvc, ok := pkt.Data.(events.ServiceUpdate); ok {
-				event.Description = prevSvc.Description
-			}
 		} else {
 			event.Description = lastDescription
 		}
-		if pkt, ok := resp.(events.Packet); ok && pkt.Type == events.SERVICE_UPDATE {
-			prevSvc := pkt.Data.(events.ServiceUpdate)
-			if svc.Type == servicequeue.IGNORE {
-				event.Service = prevSvc.Service
-				svc.Type = prevSvc.Service
-			}
-			if prevSvc.Service != svc.Type {
-				event.PrevService = prevSvc.Service
-				event.PrevWaitService = prevSvc.WaitService
-			} else {
-				event.PrevService = lastPrevService
-				event.PrevWaitService = lastPrevWaitService
-			}
-		}
-		lastPrevService = event.PrevService
-		lastPrevWaitService = event.PrevWaitService
 		p.b.Broadcast(events.Packet{Type: events.SERVICE_UPDATE, Data: event})
 	}
 }
@@ -656,6 +642,11 @@ func (p *progress) handleCUIProgress(c echo.Context) error {
 	}
 	c.Bind(&params)
 	p.pchan <- sdprogress{Progress: params.Value / params.Max, QueueSize: params.Queue - 1, State: sdprogressState{Job: &params.Job, Node: params.Node, SamplingSteps: int(params.Max), SamplingStep: int(params.Value), JobCount: 1}}
+	// SetService is part of the slot state machine, so it runs under the queue
+	// lock: without it this per-step call races with the acquisitions and the
+	// cleanup timers that move the same state.
+	p.sq.Lock()
+	defer p.sq.Unlock()
 	p.sq.SetService(servicequeue.CUI, fmt.Sprintf("rendering %d/%d steps", int(params.Value), int(params.Max)))
 	return nil
 }

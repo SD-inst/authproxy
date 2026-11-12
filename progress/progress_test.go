@@ -165,3 +165,58 @@ func TestTokenLine(t *testing.T) {
 		t.Errorf("unexpected token line without a model: %q", got)
 	}
 }
+
+// waitForService polls the broker's cached last service packet until pred
+// accepts it, failing the test when that never happens.
+func waitForService(t *testing.T, b *events.Broker, pred func(events.ServiceUpdate) bool) events.ServiceUpdate {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if pkt, ok := b.State(events.SERVICE_UPDATE).(events.Packet); ok {
+			if su, ok := pkt.Data.(events.ServiceUpdate); ok && pred(su) {
+				return su
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the expected service packet")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The previous holder travels with every update the queue publishes, so naming
+// where a task came from never depends on the broker remembering the update
+// before it — a memory the page used to rebuild through a round trip that can
+// give up and then render a running service as "NONE ⇐ NONE".
+func TestServiceUpdateCarriesPreviousHolder(t *testing.T) {
+	svcChan, broker, _ := startUpdater(t)
+
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.LLM, PrevType: servicequeue.NONE, Description: "model"}
+	waitForService(t, broker, func(su events.ServiceUpdate) bool {
+		return su.Service == servicequeue.LLM && su.PrevService == servicequeue.NONE
+	})
+
+	// The balancer re-publishes the same slot with a fresh task line. The
+	// transition on the page must stay "LLM ⇐ NONE", not degrade to "LLM ⇐ LLM".
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.LLM, PrevType: servicequeue.NONE, Description: "model: 231 tokens generated"}
+	su := waitForService(t, broker, func(su events.ServiceUpdate) bool {
+		return su.Description == "model: 231 tokens generated"
+	})
+	if su.Service != servicequeue.LLM || su.PrevService != servicequeue.NONE {
+		t.Errorf("expected a re-published slot to keep its transition, got %v ⇐ %v", su.Service, su.PrevService)
+	}
+
+	// Freed through the grace state, then taken by the next service: every step
+	// names the holder it came from.
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.WAIT, WaitType: servicequeue.LLM, PrevType: servicequeue.LLM}
+	waitForService(t, broker, func(su events.ServiceUpdate) bool {
+		return su.Service == servicequeue.WAIT && su.WaitService == servicequeue.LLM && su.PrevService == servicequeue.LLM
+	})
+	svcChan <- servicequeue.SvcUpdate{Type: servicequeue.NONE, PrevType: servicequeue.WAIT, PrevWaitType: servicequeue.LLM}
+	su = waitForService(t, broker, func(su events.ServiceUpdate) bool {
+		return su.Service == servicequeue.NONE && su.PrevService == servicequeue.WAIT && su.PrevWaitService == servicequeue.LLM
+	})
+	if su.Service == servicequeue.NONE && su.PrevService == servicequeue.NONE {
+		t.Error("a freed slot must still name the service it was freed from")
+	}
+}
