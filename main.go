@@ -293,7 +293,7 @@ func main() {
 	// (the container's /ws, with or without the /cui path rewrite) here so they
 	// are in scope for both the path route and the cui. domain route below.
 	var cuiurl *url.URL
-	var cuiWSPath, cuiWSDomain, cuiJobsPath echo.HandlerFunc
+	var cuiWSPath, cuiWSDomain, cuiJobsPath, cuiObjectInfoPath echo.HandlerFunc
 	if CUI_URL != "" {
 		cuiurl, err = url.Parse(CUI_URL)
 		if err != nil {
@@ -307,6 +307,7 @@ func main() {
 		// query into $1 so the backend sees the real path with its args.
 		cuiWSPath = composeMW(middleware.Rewrite(map[string]string{"/cui/ws*": "/ws$1"}), newCUIProxy(cuiurl))
 		cuiJobsPath = composeMW(middleware.Rewrite(map[string]string{"/cui/api/jobs*": "/api/jobs$1"}), newCUIProxy(cuiurl))
+		cuiObjectInfoPath = composeMW(middleware.Rewrite(map[string]string{"/cui/api/object_info*": "/api/object_info$1"}), newObjectInfoProxy(cuiurl, m))
 	}
 	e.Group("/*", earlyCheckMiddleware("/"), func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -382,6 +383,12 @@ func main() {
 		// static route so it never reaches ensureService. Stopped → empty stub,
 		// running → real proxy.
 		e.Any("/cui/api/jobs", m.cuiJobsHandler(cuiJobsPath), earlyCheckMiddleware("/cui/api/jobs"))
+		// /cui/api/object_info is the other half of the same post-reconnect
+		// burst: the frontend refetches the node definitions whenever its
+		// websocket reconnects. Static route for the same reason — stopped
+		// container, replay the definitions captured during this boot instead of
+		// starting ComfyUI for a tab nobody is using.
+		e.Any("/cui/api/object_info", m.cuiObjectInfoHandler(cuiObjectInfoPath), earlyCheckMiddleware("/cui/api/object_info"))
 		e.Group("/cui/*", earlyCheckMiddleware("/cui/"), m.ensureService(comfyService), middleware.Rewrite(map[string]string{"/cui/*": "/$1"}), newCUIProxy(cuiurl))
 	}
 	if config.StaticPath != "" {

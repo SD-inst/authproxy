@@ -132,6 +132,12 @@ type svcState struct {
 	state string
 	last  time.Time
 	timer *time.Timer
+	// boot counts the times this manager has seen the service go from not
+	// running to running — by a request, by /admin, or by the reconciler
+	// adopting a container it did not start. Anything captured from a live
+	// service is tagged with the boot it came from, so a restart retires the
+	// captures of the run before it. Atomic: it only ever moves forward.
+	boot atomic.Uint64
 	// pub is the last published snapshot. status() reads it instead of the
 	// guarded fields: an op in flight holds mu for as long as a start can take
 	// (up to startAttempts × startAttemptTimeout), and the admin page must keep
@@ -187,6 +193,9 @@ type containerManager struct {
 	// recon reports when the view was last reconciled with the control endpoint
 	// and what failed, if anything. Written by the reconciler, read by status.
 	recon atomic.Pointer[reconcileInfo]
+	// cuiObjectInfo is the ComfyUI node-definitions body replayed to an idle
+	// browser tab so its post-reconnect refresh does not start the container.
+	cuiObjectInfo *objectInfoCache
 }
 
 // reconcileInfo is the freshness of the manager's view, for the admin page.
@@ -200,10 +209,11 @@ type reconcileInfo struct {
 // disabled.
 func newContainerManager(wd wdClient, stopAfter time.Duration, sq *servicequeue.ServiceQueue) *containerManager {
 	m := &containerManager{
-		wd:        wd,
-		stopAfter: stopAfter,
-		sq:        sq,
-		states:    make(map[string]*svcState),
+		wd:            wd,
+		stopAfter:     stopAfter,
+		sq:            sq,
+		states:        make(map[string]*svcState),
+		cuiObjectInfo: &objectInfoCache{},
 	}
 	for _, svc := range managedServices {
 		st := &svcState{idleStop: svc.IdleStop, state: stateStopped}
@@ -226,6 +236,14 @@ func (m *containerManager) isRunning(svc string) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return st.running
+}
+
+// bootGeneration names the current boot of svc. It moves forward every time the
+// manager sees the service go from stopped to running, so a value read while the
+// service is up identifies the run of the container that produced it: a cache
+// keyed by that value cannot outlive the container it was captured from.
+func (m *containerManager) bootGeneration(svc string) uint64 {
+	return m.states[svc].boot.Load()
 }
 
 // ensureService returns middleware that makes sure the container backing svc is
@@ -280,6 +298,7 @@ func (m *containerManager) ensureRunning(svc string) {
 	if m.startLocked(svc) {
 		st.running = true
 		st.last = time.Now()
+		st.boot.Add(1)
 		st.setPhaseLocked(stateRunning)
 		log.Printf("Service %s started", svc)
 		return
@@ -468,6 +487,7 @@ func (m *containerManager) control(svc, op string) error {
 		}
 		st.running = true
 		st.last = time.Now()
+		st.boot.Add(1)
 		st.setPhaseLocked(stateRunning)
 		m.armTimerLocked(svc, st)
 		log.Printf("Service %s started manually", svc)
@@ -514,6 +534,7 @@ func (m *containerManager) control(svc, op string) error {
 		}
 		st.running = true
 		st.last = time.Now()
+		st.boot.Add(1)
 		st.setPhaseLocked(stateRunning)
 		m.armTimerLocked(svc, st)
 		log.Printf("Service %s restarted manually", svc)
@@ -626,6 +647,10 @@ func (m *containerManager) reconcileService(ctx context.Context, svc string) err
 		// this moment, so it gets a full inactivity window instead of being
 		// stopped for idleness it cannot account for.
 		st.last = time.Now()
+		// The boot counter moves here too: a container started outside the proxy
+		// (a restart by hand, a compose up) is a new run, and whatever was
+		// captured from the previous one is retired with it.
+		st.boot.Add(1)
 		m.armTimerLocked(svc, st)
 	}
 	st.setPhaseLocked(state)
