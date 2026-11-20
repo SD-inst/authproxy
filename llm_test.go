@@ -7,11 +7,13 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v4"
+	"github.com/rkfg/authproxy/proxy"
 	"github.com/rkfg/authproxy/servicequeue"
 )
 
@@ -176,8 +178,8 @@ func TestReleaseWithoutGraceSkipsWait(t *testing.T) {
 	sq, updates := newTestQueueWithUpdates()
 	sq.Lock()
 	sq.SetService(servicequeue.LLM)
-	sq.Hold()
-	sq.Release(time.Minute, 0)
+	hold := sq.Hold()
+	sq.Release(hold, time.Minute, 0)
 	sq.Unlock()
 
 	var last servicequeue.SvcUpdate
@@ -204,8 +206,8 @@ func TestReleaseWithGraceHoldsTheSlot(t *testing.T) {
 	sq, updates := newTestQueueWithUpdates()
 	sq.Lock()
 	sq.SetService(servicequeue.LLM)
-	sq.Hold()
-	sq.Release(time.Minute, 30*time.Second)
+	hold := sq.Hold()
+	sq.Release(hold, time.Minute, 30*time.Second)
 	sq.Unlock()
 
 	for {
@@ -220,6 +222,167 @@ func TestReleaseWithGraceHoldsTheSlot(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("the queue never entered WAIT after a held release")
 		}
+	}
+}
+
+// The hold bound is the counterpart of the VIP grace: a VIP may keep the slot
+// for as long as it likes (its hold is what keeps the model loaded), while any
+// other key is bounded by llm_nonvip_max_hold from the moment it takes the slot,
+// so several parallel threads of one key cannot occupy the queue indefinitely.
+func TestLLMHoldLimitBoundsOnlyNonVIPKeys(t *testing.T) {
+	oldKeys, oldLimit := vipKeys, nonVIPMaxHold
+	defer func() { vipKeys, nonVIPMaxHold = oldKeys, oldLimit }()
+	vipKeys = map[[32]byte]bool{sha256.Sum256([]byte("sk-vip")): true}
+	nonVIPMaxHold = time.Minute
+
+	if d := llmHoldLimit("Bearer sk-vip"); d != 0 {
+		t.Errorf("VIP key: expected no bound, got %s", d)
+	}
+	for _, key := range []string{"sk-plain", "Bearer sk-plain", ""} {
+		if d := llmHoldLimit(key); d != time.Minute {
+			t.Errorf("key %q: expected the configured %s bound, got %s", key, time.Minute, d)
+		}
+	}
+	// llm_nonvip_max_hold: "0s" switches the bound off for everyone.
+	nonVIPMaxHold = 0
+	if d := llmHoldLimit("sk-plain"); d != 0 {
+		t.Errorf("with the bound disabled: expected 0, got %s", d)
+	}
+}
+
+// The bound seen from the client's side, through the real proxy chain: a non-VIP
+// key with two parallel threads streaming from one model cannot keep the queue.
+// The deadline was armed when the first thread took the slot, and the second one
+// re-entered it without moving it, so the slot goes back to NONE while both
+// requests are still streaming and a task queued behind them gets the GPU. A VIP
+// key is exempt — nothing takes the slot away from it while it is working.
+func TestLLMHoldDeadlineFreesTheQueueForNonVIP(t *testing.T) {
+	const (
+		deadline = 100 * time.Millisecond // llm_nonvip_max_hold
+		stream   = 800 * time.Millisecond // how long the model keeps generating
+	)
+	oldLimit, oldKeys, oldGrace := nonVIPMaxHold, vipKeys, vipGracePeriod
+	defer func() { nonVIPMaxHold, vipKeys, vipGracePeriod = oldLimit, oldKeys, oldGrace }()
+	nonVIPMaxHold = deadline
+	vipGracePeriod = 50 * time.Millisecond
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/unload" {
+			return // the handover drops the model, as any handover does
+		}
+		time.Sleep(stream)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"model":"llama"}`)
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse target: %s", err)
+	}
+	sq := newTestQueue()
+	llm := &llmbalancer{sq: sq, target: target, client: *upstream.Client()}
+
+	e := echo.New()
+	e.Use(proxy.NewProxyWrapper(target, llm.interceptor()))
+	e.POST("/v1/chat/completions", func(c echo.Context) error {
+		return c.String(http.StatusNotImplemented, "the proxy middleware must not chain to the handler")
+	})
+	front := httptest.NewServer(e)
+	defer front.Close()
+
+	post := func(t *testing.T, key string) {
+		req, err := http.NewRequest(http.MethodPost, front.URL+"/v1/chat/completions", strings.NewReader(`{"model":"llama","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			t.Errorf("building request: %s", err)
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Errorf("proxied request: %s", err)
+			return
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	// waitForFree returns once the slot is back to NONE, so one case cannot
+	// start behind the leftovers of the previous one.
+	waitForFree := func(t *testing.T) {
+		t.Helper()
+		timeout := time.After(5 * time.Second)
+		for {
+			sq.Lock()
+			free := sq.Service() == servicequeue.NONE
+			sq.Unlock()
+			if free {
+				return
+			}
+			select {
+			case <-timeout:
+				t.Fatal("the slot never went back to NONE")
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		key  string
+	}{
+		{"non-VIP", "sk-plain"},
+		{"VIP", "sk-vip"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vipKeys = nil
+			if tc.name == "VIP" {
+				vipKeys = map[[32]byte]bool{sha256.Sum256([]byte("sk-vip")): true}
+			}
+			waitForFree(t)
+
+			start := time.Now()
+			var wg sync.WaitGroup
+			for i := 0; i < 2; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					post(t, tc.key)
+				}()
+			}
+			// Both threads are in the slot well before the deadline; A1111 joins
+			// the queue behind them and must wait for the slot, not for the model.
+			time.Sleep(deadline / 3)
+			acquired := make(chan time.Time, 1)
+			go func() {
+				sq.Lock()
+				sq.AwaitReent(servicequeue.SD)
+				now := time.Now()
+				sq.SetService(servicequeue.NONE) // A1111 is done with the GPU
+				sq.Unlock()
+				acquired <- now
+			}()
+
+			var got time.Time
+			select {
+			case got = <-acquired:
+			case <-time.After(stream + 5*time.Second):
+				t.Fatal("the queued A1111 request never got the slot")
+			}
+			elapsed := got.Sub(start)
+			if tc.name == "non-VIP" {
+				// The point of the bound: the slot changes hands while the key is
+				// still generating, and not one moment earlier.
+				if elapsed < deadline-5*time.Millisecond {
+					t.Errorf("A1111 got the slot %v after the start, before the %v hold bound", elapsed, deadline)
+				}
+				if elapsed > stream/2 {
+					t.Errorf("A1111 waited %v behind two non-VIP threads, want the %v bound to free the slot while they stream (%v)", elapsed, deadline, stream)
+				}
+			} else if elapsed < stream {
+				t.Errorf("a VIP was cut short: A1111 got the slot %v after the start, want no earlier than the end of its requests (%v)", elapsed, stream)
+			}
+			wg.Wait()
+		})
 	}
 }
 

@@ -149,6 +149,41 @@ func TestLLMVIPKeys(t *testing.T) {
 		t.Fatal("without llm_vip_keys no key may be VIP")
 	}
 }
+
+// The bound on a non-VIP key's hold is what keeps a client with several parallel
+// threads from occupying the queue forever, so its parsing deserves the same
+// care as the VIP hold: an unusable value must fall back to the default rather
+// than silently disable the bound.
+func TestLLMNonVIPMaxHold(t *testing.T) {
+	oldHold := config.LLMNonVIPMaxHold
+	oldNonVIP := nonVIPMaxHold
+	defer func() {
+		config.LLMNonVIPMaxHold, nonVIPMaxHold = oldHold, oldNonVIP
+	}()
+
+	config.LLMNonVIPMaxHold = "90s"
+	config.buildVipKeys()
+	if nonVIPMaxHold != 90*time.Second {
+		t.Fatalf("expected the configured 90s bound, got %s", nonVIPMaxHold)
+	}
+
+	// Unset, unparseable or negative: the default, not no bound.
+	for _, s := range []string{"", "notaduration", "-1m"} {
+		config.LLMNonVIPMaxHold = s
+		config.buildVipKeys()
+		if nonVIPMaxHold != defaultNonVIPMaxHold {
+			t.Fatalf("expected the default bound for %q, got %s", s, nonVIPMaxHold)
+		}
+	}
+
+	// 0 is a legitimate value: it switches the bound off deliberately.
+	config.LLMNonVIPMaxHold = "0s"
+	config.buildVipKeys()
+	if nonVIPMaxHold != 0 {
+		t.Fatalf("expected the bound to be disabled, got %s", nonVIPMaxHold)
+	}
+}
+
 func keyDigestHex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])

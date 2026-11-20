@@ -42,6 +42,16 @@ task_max_lifetime: "2h"
 # llm_vip_keys:
 #     - "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 # llm_vip_grace_period: "10s"
+# How long any other (non-VIP) key may keep holding the queue, counted from the
+# moment it takes the slot. This is a deadline, not an idle timeout: requests of
+# that key still arriving do not move it, so a client cannot occupy the GPU
+# indefinitely by keeping several parallel threads going. When it expires the
+# queue goes to NONE even if that key still has requests in flight, so whatever
+# is queued — another model, SD, ComfyUI — gets the memory. Generations longer
+# than this may therefore be interrupted by a service that was waiting; raise it
+# if that bothers you, or set 0 to disable the bound (a busy client then holds
+# the queue for as long as it keeps requests arriving).
+# llm_nonvip_max_hold: "1m"
 # ip_blacklist: client IPs / CIDR ranges to drop at the connection level.
 # The IP is read from the proxy headers (X-Forwarded-For / X-Real-IP). A
 # matching request has its connection closed with no response sent.

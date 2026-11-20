@@ -65,6 +65,19 @@ func llmGraceDelay(req *http.Request) time.Duration {
 	return 0
 }
 
+// llmHoldLimit returns how long the request's key may keep holding the service
+// slot from the moment it takes it — the hold deadline, not an idle timeout. A
+// VIP key is unbounded (0): the hold is what keeps its model loaded, and it is
+// bounded between requests by llm_vip_grace_period. Every other key is bounded
+// by llm_nonvip_max_hold, because the bound is what stops a key from keeping
+// the GPU with a steady stream of parallel requests.
+func llmHoldLimit(authorization string) time.Duration {
+	if isVIPKey(authorization) {
+		return 0
+	}
+	return nonVIPMaxHold
+}
+
 func isLLMPath(path string) bool {
 	return (strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/v1/completions") ||
 		strings.HasSuffix(path, "/v1/internal/encode") || strings.HasSuffix(path, "/v1/embeddings") || strings.HasPrefix(path, "/upstream/")) && !strings.HasSuffix(path, ".js")
@@ -111,7 +124,19 @@ func (b *llmbalancer) startupCleanup() *servicequeue.CleanupFunc {
 
 func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdater chan<- metrics.MetricUpdate, controls progress.QueueControls) *llmbalancer {
 	result := llmbalancer{sq: sq, target: target, metricUpdater: metricUpdater, controls: controls}
-	result.proxy = proxy.NewProxyWrapper(target, &proxy.Interceptor{
+	result.proxy = proxy.NewProxyWrapper(target, result.interceptor())
+	go result.startMetricCollection()
+	return &result
+}
+
+// interceptor is the queue side of the LLM proxy: Before acquires the GPU slot
+// for the request (chaining requests of the same key and model), After releases
+// it when the response body closes. It is a method rather than a literal inside
+// NewLLMBalancer so the queue behaviour can be exercised without the metrics
+// subscriber that the balancer otherwise runs against llama-swap.
+func (b *llmbalancer) interceptor() *proxy.Interceptor {
+	sq := b.sq
+	return &proxy.Interceptor{
 		Before: func(c echo.Context) {
 			log.Printf("LLM Req: %s %s", c.Request().Method, c.Request().URL.String())
 			path := c.Request().URL.Path
@@ -131,8 +156,8 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 			// only allow call chaining with POST methods
 			if c.Request().Method == "POST" {
 				// this can proceed if the service is either NONE or WAIT/LLM and the API apiKey matches (allow consequent requests from the same user to go uninterrupted)
-				prevKey := result.apiKey
-				prevModel := result.model
+				prevKey := b.apiKey
+				prevModel := b.model
 				body, err := io.ReadAll(c.Request().Body)
 				c.Request().Body = io.NopCloser(bytes.NewBuffer(body))
 				model := ""
@@ -161,37 +186,46 @@ func NewLLMBalancer(target *url.URL, sq *servicequeue.ServiceQueue, metricUpdate
 					if apiKey != prevKey {
 						log.Printf("API key mismatch: '%s' != '%s'", apiKey, prevKey)
 					}
-					if result.model != "" && prevModel != model {
+					if b.model != "" && prevModel != model {
 						log.Printf("Model mismatch: '%s' != '%s'", model, prevModel)
 					}
-					return apiKey == prevKey && (result.model == "" || prevModel == model)
+					return apiKey == prevKey && (b.model == "" || prevModel == model)
 				}, model)
 				// don't need to make it a CV as we rely on service queue mutex
-				result.apiKey = apiKey
-				result.model = model
+				b.apiKey = apiKey
+				b.model = model
 			} else {
 				sq.Await(servicequeue.LLM, false)
+			}
+			// Bound the hold of every non-VIP key: at llm_nonvip_max_hold from the
+			// moment it took the slot the queue goes back to NONE even if that key
+			// still has requests in flight. The deadline is armed once per hold and
+			// re-entry of the same key does not move it, which is the point: several
+			// parallel threads of one key keep re-entering the slot, and were the
+			// bound re-armed by that traffic the client could hold the GPU for as
+			// long as it kept requests arriving. Who is queued behind it — another
+			// model or another GPU service — gets the slot when it expires.
+			if limit := llmHoldLimit(apiKey); limit > 0 {
+				sq.SetHoldDeadline(limit)
 			}
 			// Attribute the status page (/q) progress bar to the API key
 			// holding the slot. LLM clients authenticate with a key instead of
 			// a JWT, so the color mapping is keyed by the key's digest; the key
 			// itself never reaches the page.
-			if result.controls != nil {
-				result.controls.SetTaskColor(llmKeyColor(apiKey))
+			if b.controls != nil {
+				b.controls.SetTaskColor(llmKeyColor(apiKey))
 			}
 			sq.Hold()
 			sq.CancelCleanup() // cancel potential WAIT/LLM cleanup
 			sq.CF = &servicequeue.CleanupFunc{
-				F:       result.unloadModel,
+				F:       b.unloadModel,
 				Service: servicequeue.LLM,
 			}
 		},
 		After: sq.ServiceCloserWithAfterBody(servicequeue.LLM, func(path string) bool {
 			return isLLMPath(path)
 		}, time.Second*300, true, llmGraceDelay),
-	})
-	go result.startMetricCollection()
-	return &result
+	}
 }
 
 type eventType struct {

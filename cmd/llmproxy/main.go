@@ -163,9 +163,12 @@ type releaseKey struct{}
 
 // slotRelease pairs with the Hold() taken when the request acquired the slot.
 // It is idempotent: the body-close hook and the error handler can both fire for
-// one request, and the slot must be freed at most once per holder.
+// one request, and the slot must be freed at most once per holder. hold is the
+// id that Hold returned, so a release of a slot that has already been taken
+// away is not mistaken for the release of whoever holds it now.
 type slotRelease struct {
 	sq   *servicequeue.ServiceQueue
+	hold uint64
 	once sync.Once
 }
 
@@ -173,7 +176,7 @@ func (s *slotRelease) release(r *http.Request) {
 	s.once.Do(func() {
 		s.sq.Lock()
 		defer s.sq.Unlock()
-		s.sq.Release(hardCap, graceDelay(r))
+		s.sq.Release(s.hold, hardCap, graceDelay(r))
 	})
 }
 
@@ -540,7 +543,7 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		} else {
 			sq.Await(servicequeue.LLM, false)
 		}
-		sq.Hold()
+		hold := sq.Hold()
 		sq.CancelCleanup()
 		sq.CF = &servicequeue.CleanupFunc{
 			F: func() {
@@ -557,7 +560,7 @@ func newHandler(lp *llmProxy, rp *httputil.ReverseProxy) *http.ServeMux {
 		// Bind the release to this request: the same holder is freed whichever
 		// of the two paths runs — the response body closing, or a proxy error
 		// before/without a response — and it is freed exactly once.
-		rel := &slotRelease{sq: sq}
+		rel := &slotRelease{sq: sq, hold: hold}
 		r = r.WithContext(context.WithValue(r.Context(), releaseKey{}, rel))
 		sq.Unlock()
 

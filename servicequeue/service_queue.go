@@ -79,7 +79,18 @@ type ServiceQueue struct {
 	// (acquired, or re-entered under the same holder). A request calls Hold at
 	// acquisition and Release at body-close/error; the slot is only freed when
 	// the last holder leaves. Caller must hold the lock.
-	holdCount         int
+	holdCount int
+	// holdID numbers the holds in a row: it is bumped whenever the slot changes
+	// state, so it identifies the hold a request joined. A holder passes the id
+	// it got from Hold to Release, which lets a release of a hold that has since
+	// been taken away be recognized as stale instead of freeing the current
+	// holder's slot. Guarded by the queue lock.
+	holdID uint64
+	// holdDeadlineTimer frees the slot at the end of a bounded hold even while
+	// holders are still in flight. Unlike cleanupTimer it is armed once per hold
+	// and never re-armed by activity inside that hold, so a holder that keeps
+	// requests arriving cannot push the bound forward. Guarded by the queue lock.
+	holdDeadlineTimer *time.Timer
 	CF                *CleanupFunc // executes after await if service changed
 	svcChan           chan<- SvcUpdate
 	waitqueue         atomic.Int32
@@ -203,18 +214,72 @@ func (sq *ServiceQueue) CancelCleanup() {
 	sq.cleanupTimer = nil
 }
 
-// Hold records that one more request is now holding the slot. It must be paired
-// with a later Release (one per request: Hold at acquisition, Release at
-// body-close or proxy error). Caller must hold the lock.
-func (sq *ServiceQueue) Hold() {
-	sq.holdCount++
+// SetHoldDeadline bounds the current hold: at d the slot goes to NONE even if
+// holders are still in flight, so whoever holds it cannot keep the GPU for more
+// than d per acquisition. Unlike SetCleanup, calling it again while the same
+// hold is running does not move the deadline — requests still arriving is
+// exactly what must not extend the bound. The next hold (the slot changing
+// hands) arms its own. d <= 0 means the hold is not bounded. Caller must hold
+// the lock.
+func (sq *ServiceQueue) SetHoldDeadline(d time.Duration) {
+	if d <= 0 {
+		sq.CancelHoldDeadline()
+		return
+	}
+	if sq.holdDeadlineTimer != nil {
+		return // this hold is already bounded; its remaining traffic cannot extend it
+	}
+	log.Printf("*** Set hold deadline: %s ***", d)
+	sq.holdDeadlineTimer = time.AfterFunc(d, func() {
+		sq.Lock()
+		defer sq.Unlock()
+		if sq.holdDeadlineTimer == nil {
+			// The hold ended (or was re-bounded) while this callback waited for
+			// the lock; there is nothing left for this deadline to do.
+			return
+		}
+		sq.holdDeadlineTimer = nil
+		if sq.service == NONE {
+			return
+		}
+		log.Printf("*** Hold deadline %s expired: freeing the slot with %d holder(s) still in flight ***", d, sq.holdCount)
+		sq.SetService(NONE)
+	})
 }
 
-// Release marks one holder as done. When it is the last holder, the slot is
-// freed (WAIT+grace if afterBody > 0, else NONE); otherwise the slot stays held
-// for the remaining holders and the hard cap is re-armed so they stay bounded.
+// CancelHoldDeadline disarms the bounded hold of the current holder. Caller must
+// hold the lock.
+func (sq *ServiceQueue) CancelHoldDeadline() {
+	if sq.holdDeadlineTimer != nil {
+		sq.holdDeadlineTimer.Stop()
+		log.Printf("*** Cancelled hold deadline ***")
+		sq.holdDeadlineTimer = nil
+	}
+}
+
+// Hold records that one more request is now holding the slot and returns the id
+// of the hold it joined. It must be paired with a later Release carrying that id
+// (one per request: Hold at acquisition, Release at body-close or proxy error).
 // Caller must hold the lock.
-func (sq *ServiceQueue) Release(hardCap, afterBody time.Duration) {
+func (sq *ServiceQueue) Hold() uint64 {
+	sq.holdCount++
+	return sq.holdID
+}
+
+// Release marks one holder as done. hold is the id the holder got from Hold: if
+// the slot changed state since then, the holder's slot was already taken away
+// (a hold deadline or a hard-cap timer fired while its request was in flight)
+// and its release belongs to a hold that no longer exists — acting on the count
+// of whoever holds the slot now would free it out from under them. When it is
+// the last holder of the current hold, the slot is freed (WAIT+grace if
+// afterBody > 0, else NONE); otherwise the slot stays held for the remaining
+// holders and the hard cap is re-armed so they stay bounded. Caller must hold
+// the lock.
+func (sq *ServiceQueue) Release(hold uint64, hardCap, afterBody time.Duration) {
+	if hold != sq.holdID {
+		log.Printf("*** Release: ignoring release of hold %d, the slot is on hold %d ***", hold, sq.holdID)
+		return
+	}
 	if sq.holdCount > 0 {
 		sq.holdCount--
 	}
@@ -225,8 +290,7 @@ func (sq *ServiceQueue) Release(hardCap, afterBody time.Duration) {
 	}
 	log.Printf("*** Release: last holder, freeing slot ***")
 	if sq.service == NONE {
-		// The slot was already taken away from this holder — a hard-cap timer
-		// fired while its request was still in flight. Arming the after-body
+		// Nothing to hand over: the slot is already free. Arming the after-body
 		// grace on a free slot would invent a WAIT state for a holder that no
 		// longer exists, and the status page would show a transition that never
 		// happened.
@@ -266,6 +330,12 @@ func (sq *ServiceQueue) SetService(s SvcType, description ...string) {
 	}
 	if sq.service != s {
 		log.Printf("*** Setting service to %v ***", s)
+		// A real state change ends the hold that was in progress: whoever still
+		// has a request of that hold running must not be able to free what is no
+		// longer theirs, and a bounded hold belongs to the holder it was armed
+		// for. Re-entering the same service is not a change and keeps both.
+		sq.holdID++
+		sq.CancelHoldDeadline()
 		sq.prevService = sq.service
 		sq.prevWaitedService = sq.waitedService
 		switch s {
@@ -325,6 +395,10 @@ func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(p
 		sq.Lock()
 		sq.AwaitReent(t)
 		log.Printf("*** Closer wait for %s is over ***", path)
+		// The hold this response belongs to, as of now: AwaitReent above may have
+		// taken the slot again for it, and the release on body-close must act on
+		// that hold and not on one that has already been handed over.
+		hold := sq.holdID
 		if closeOnBody {
 			if resp != nil {
 				resp.Body = BodyWrapper{ReadCloser: resp.Body, onClose: func() {
@@ -334,12 +408,12 @@ func (sq *ServiceQueue) ServiceCloserWithAfterBody(t SvcType, pathChecker func(p
 					if waitAfterBody != nil {
 						afterBody = waitAfterBody(req)
 					}
-					sq.Release(timeout, afterBody)
+					sq.Release(hold, timeout, afterBody)
 					sq.Unlock()
 				}}
 			} else {
 				log.Printf("*** No response set ***")
-				sq.Release(timeout, 0)
+				sq.Release(hold, timeout, 0)
 				sq.Unlock()
 				return nil
 			}

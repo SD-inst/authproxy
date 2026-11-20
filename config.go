@@ -79,11 +79,23 @@ type Config struct {
 	// LLMVIPGracePeriod is how long that hold lasts (Go duration, e.g. "30s").
 	// Only meaningful with a non-empty llm_vip_keys; 0 disables the hold.
 	LLMVIPGracePeriod string `yaml:"llm_vip_grace_period" description:"How long a VIP LLM key holds the service slot after its last request (Go duration, default '10s')"`
+	// LLMNonVIPMaxHold bounds how long any other LLM key keeps the service slot,
+	// counted from the moment it takes it (Go duration, e.g. "1m"). It is a
+	// deadline, not an idle timeout: requests of that key still arriving do not
+	// move it, so a client cannot occupy the queue indefinitely with several
+	// parallel threads. When it expires the slot goes to NONE even with that
+	// key's requests still in flight, and whatever is queued proceeds. VIP keys
+	// are not bound by it; 0 disables the bound.
+	LLMNonVIPMaxHold string `yaml:"llm_nonvip_max_hold" description:"How long a non-VIP LLM key may keep the service slot from the moment it takes it (Go duration, default '1m'; 0 disables)"`
 }
 
 // defaultVIPGracePeriod is the hold used when llm_vip_grace_period is unset or
 // malformed.
 const defaultVIPGracePeriod = 10 * time.Second
+
+// defaultNonVIPMaxHold is the hold bound used when llm_nonvip_max_hold is unset
+// or malformed.
+const defaultNonVIPMaxHold = time.Minute
 
 // vipKeys is the inverted llm_vip_keys set (SHA-256 digest of the key -> VIP),
 // rebuilt by loadConfig. Empty means no key gets the between-request hold.
@@ -91,6 +103,9 @@ var vipKeys = map[[32]byte]bool{}
 
 // vipGracePeriod is the resolved llm_vip_grace_period, rebuilt by loadConfig.
 var vipGracePeriod = defaultVIPGracePeriod
+
+// nonVIPMaxHold is the resolved llm_nonvip_max_hold, rebuilt by loadConfig.
+var nonVIPMaxHold = defaultNonVIPMaxHold
 
 // userColors is the inverted TaskColors map (username -> color), rebuilt by
 // loadConfig. Kept lowercase-keyed because credential usernames are.
@@ -199,10 +214,11 @@ func (c *Config) buildKeyColors() {
 }
 
 // buildVipKeys rebuilds vipKeys from LLMVIPKeys (SHA-256 digests, matched
-// case-insensitively like llm_key_colors) and vipGracePeriod from
-// LLMVIPGracePeriod. A malformed digest is skipped with a log line; an unset or
-// unparseable grace period falls back to defaultVIPGracePeriod. A negative
-// period is rejected the same way — a hold cannot run backwards.
+// case-insensitively like llm_key_colors) and resolves the LLM hold settings:
+// vipGracePeriod from LLMVIPGracePeriod and nonVIPMaxHold from
+// LLMNonVIPMaxHold. A malformed digest is skipped with a log line; an unset or
+// unparseable duration falls back to its default. A negative period is rejected
+// the same way — neither a hold nor a bound can run backwards.
 func (c *Config) buildVipKeys() {
 	vipKeys = map[[32]byte]bool{}
 	for _, digest := range c.LLMVIPKeys {
@@ -232,8 +248,20 @@ func (c *Config) buildVipKeys() {
 			vipGracePeriod = d
 		}
 	}
+	nonVIPMaxHold = defaultNonVIPMaxHold
+	if s := strings.TrimSpace(c.LLMNonVIPMaxHold); s != "" {
+		d, err := time.ParseDuration(s)
+		if err != nil || d < 0 {
+			log.Printf("llm_nonvip_max_hold: ignoring %q (want a Go duration, e.g. \"1m\"), using %s", s, defaultNonVIPMaxHold)
+		} else {
+			nonVIPMaxHold = d
+		}
+	}
 	if len(vipKeys) > 0 {
 		log.Printf("llm_vip_keys: %d VIP key(s), holding the slot %s after the last request", len(vipKeys), vipGracePeriod)
+	}
+	if nonVIPMaxHold > 0 {
+		log.Printf("llm_nonvip_max_hold: other LLM keys may hold the slot %s per acquisition", nonVIPMaxHold)
 	}
 }
 
