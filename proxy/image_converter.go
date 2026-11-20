@@ -84,7 +84,11 @@ func convertImageURL(url string) (string, error) {
 	return "data:image/png;base64," + pngB64, nil
 }
 
-// ConvertRequestIfNeeded converts WebP images to PNG in chat completions requests
+// ConvertRequestIfNeeded converts WebP images to PNG in chat completions
+// requests. It reads the body to find the images and always leaves the request
+// with a readable body again — the caller logs a conversion failure and proxies
+// the request as it arrived, so a request it could not parse must still reach
+// the upstream intact.
 func ConvertRequestIfNeeded(c echo.Context) error {
 	if c.Request().Method != "POST" {
 		return nil
@@ -101,6 +105,11 @@ func ConvertRequestIfNeeded(c echo.Context) error {
 	}
 
 	c.Request().Body.Close()
+	// The body has just been consumed to look inside it, and a conversion failure
+	// is something the caller only logs: the request goes upstream either way. So
+	// hand the body back playable here, before anything can fail, rather than on
+	// the one path that happens to succeed.
+	setRequestBody(c.Request(), bodyBytes)
 
 	var requestData map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &requestData); err != nil {
@@ -148,8 +157,6 @@ func ConvertRequestIfNeeded(c echo.Context) error {
 				return err
 			}
 			setRequestBody(c.Request(), updatedBody)
-		} else {
-			setRequestBody(c.Request(), bodyBytes)
 		}
 	}
 
