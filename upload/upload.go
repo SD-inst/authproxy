@@ -30,7 +30,7 @@ import (
 //go:embed webroot
 var webroot embed.FS
 
-const civitaiToken = "__Secure-civ-token"
+const civitaiToken = "__Host-civ-token"
 
 const adminLogin = "admin"
 
